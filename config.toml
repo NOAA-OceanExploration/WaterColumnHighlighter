@@ -1,0 +1,12 @@
+[paths]
+video_dir = "path/to/videos"
+csv_dir = "path/to/csvs"
+model_save_path = "path/to/save/model.pth"
+
+[training]
+batch_size = 4
+num_epochs = 10
+learning_rate = 0.001
+clip_length = 10
+hidden_dim = 256
+num_layers = 2
