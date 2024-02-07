@@ -9,6 +9,10 @@ from torch.optim import Adam
 import numpy as np
 import os
 import toml
+import wandb
+
+wandb.init(project="video_highlight_detection", config=config['training'])
+config_wandb = wandb.config
 
 # Load configuration
 config = toml.load('config.toml')
@@ -107,7 +111,9 @@ model = HighlightDetectionModel(
 criterion = nn.BCELoss()
 optimizer = Adam(model.parameters(), lr=config['training']['learning_rate'])
 
-# Training loop with model saving and checkpointing
+wandb.watch(model, log='all')
+
+# Training loop with model saving, checkpointing, and wandb logging
 for epoch in range(config['training']['num_epochs']):
     for clips, labels in dataloader:
         optimizer.zero_grad()
@@ -116,8 +122,12 @@ for epoch in range(config['training']['num_epochs']):
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+
     print(f'Epoch {epoch+1}, Loss: {loss.item()}')
-    # Save model checkpoint
+    # Log metrics to wandb
+    wandb.log({"epoch": epoch + 1, "loss": loss.item()})
+
+    # Save model checkpoint as before
     checkpoint_path = f"{config['paths']['model_save_path']}_checkpoint_{epoch+1}.pth"
     torch.save({
         'epoch': epoch,
@@ -125,3 +135,6 @@ for epoch in range(config['training']['num_epochs']):
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': loss,
     }, checkpoint_path)
+
+# Finish the wandb run at the end of training
+wandb.finish()
