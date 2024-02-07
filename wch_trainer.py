@@ -11,11 +11,12 @@ import os
 import toml
 import wandb
 
+# Load configuration FIRST
+config = toml.load('config.toml')
+
+# THEN Initialize wandb with the loaded configuration
 wandb.init(project="video_highlight_detection", config=config['training'])
 config_wandb = wandb.config
-
-# Load configuration
-config = toml.load('config.toml')
 
 class VideoDataset(Dataset):
     def __init__(self, video_dir, csv_dir, clip_length=10, transform=None):
