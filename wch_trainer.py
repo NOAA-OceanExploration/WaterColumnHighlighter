@@ -113,7 +113,7 @@ optimizer = Adam(model.parameters(), lr=config['training']['learning_rate'])
 
 wandb.watch(model, log='all')
 
-# Training loop with model saving, checkpointing, and wandb logging
+# Training loop with wandb logging
 for epoch in range(config['training']['num_epochs']):
     for clips, labels in dataloader:
         optimizer.zero_grad()
@@ -135,6 +135,14 @@ for epoch in range(config['training']['num_epochs']):
         'optimizer_state_dict': optimizer.state_dict(),
         'loss': loss,
     }, checkpoint_path)
+
+# Save the final model after training is complete
+final_model_path = config['paths']['model_save_path'] + '_final.pth'
+torch.save(model.state_dict(), final_model_path)
+print(f'Model saved to {final_model_path}')
+
+# Optionally log the final model to wandb
+wandb.save(final_model_path)
 
 # Finish the wandb run at the end of training
 wandb.finish()
