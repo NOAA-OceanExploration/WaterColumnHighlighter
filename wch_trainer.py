@@ -1,16 +1,17 @@
 import cv2
 import pandas as pd
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import Compose, Resize, Normalize, ToTensor
 from torchvision.models import resnet50
+from torch.optim import Adam
 import numpy as np
 import os
+import toml
 
-import torch.nn as nn
-import torch.nn.functional as F
-
-from torch.optim import Adam
+# Load configuration
+config = toml.load('config.toml')
 
 class VideoDataset(Dataset):
     def __init__(self, video_dir, csv_dir, clip_length=10, transform=None):
@@ -84,26 +85,43 @@ class HighlightDetectionModel(nn.Module):
         x = self.fc(x[:, -1, :])
         return torch.sigmoid(x)
 
-# Initialize dataset and dataloader
-transform = Compose([Resize((224, 224)), ToTensor(), Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-dataset = VideoDataset(video_dir='path/to/videos', csv_dir='path/to/csvs', transform=transform)
-dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+# Initialize dataset and dataloader with parameters from config
+transform = Compose([
+    Resize((224, 224)),
+    ToTensor(),
+    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+dataset = VideoDataset(
+    video_dir=config['paths']['video_dir'],
+    csv_dir=config['paths']['csv_dir'],
+    clip_length=config['training']['clip_length'],
+    transform=transform
+)
+dataloader = DataLoader(dataset, batch_size=config['training']['batch_size'], shuffle=True)
 
-# Initialize model, loss, and optimizer
-model = HighlightDetectionModel(hidden_dim=256, num_layers=2)
+# Initialize model, loss, and optimizer with parameters from config
+model = HighlightDetectionModel(
+    hidden_dim=config['training']['hidden_dim'],
+    num_layers=config['training']['num_layers']
+)
 criterion = nn.BCELoss()
-optimizer = Adam(model.parameters(), lr=0.001)
+optimizer = Adam(model.parameters(), lr=config['training']['learning_rate'])
 
-# Training loop
-num_epochs = 10
-for epoch in range(num_epochs):
+# Training loop with model saving and checkpointing
+for epoch in range(config['training']['num_epochs']):
     for clips, labels in dataloader:
         optimizer.zero_grad()
         outputs = model(clips)
-        labels = labels.view(-1, 1).float()  # Ensure labels are the correct shape
+        labels = labels.view(-1, 1).float()
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
     print(f'Epoch {epoch+1}, Loss: {loss.item()}')
-
-
+    # Save model checkpoint
+    checkpoint_path = f"{config['paths']['model_save_path']}_checkpoint_{epoch+1}.pth"
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+    }, checkpoint_path)
