@@ -1,3 +1,5 @@
+![WaterColumnHighlighter Logo](WHC.png)
+
 # WaterColumnHighlighter
 
 WaterColumnHighlighter is a deep learning project aimed at identifying and extracting highlight segments from underwater videos. This tool leverages the power of convolutional neural networks (CNNs) and long short-term memory (LSTM) networks to analyze video data and classify segments as highlights or non-highlights. It's particularly useful for researchers, marine biologists, and enthusiasts looking to automatically detect interesting or significant moments in lengthy underwater footage.
