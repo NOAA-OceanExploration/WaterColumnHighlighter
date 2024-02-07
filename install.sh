@@ -1,1 +1,1 @@
-pip install torch torchvision opencv-python toml
+pip install torch torchvision opencv-python toml wandb
