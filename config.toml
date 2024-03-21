@@ -1,7 +1,8 @@
 [paths]
 video_dir = "path/to/videos"
 csv_dir = "path/to/csvs"
-model_save_path = "path/to/save/model.pth"
+model_save_path = "path/to/save/model"
+s3_bucket = "your-s3-bucket-name"
 
 [training]
 batch_size = 4
@@ -10,3 +11,6 @@ learning_rate = 0.001
 clip_length = 10
 hidden_dim = 256
 num_layers = 2
+k_folds = 5
+early_stopping_patience = 10
+gradient_clip = 1.0
