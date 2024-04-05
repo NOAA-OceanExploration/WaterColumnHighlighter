@@ -11,6 +11,7 @@ import numpy as np
 import os
 import toml
 import wandb
+import tarfile
 import boto3
 from sklearn.model_selection import KFold
 
@@ -32,27 +33,72 @@ class VideoDataset(Dataset):
     def _load_clips_and_labels(self):
         clips = []
         labels = []
-        for video_name in os.listdir(self.video_dir):
-            if not video_name.endswith('.mp4'):
-                continue
-            video_path = os.path.join(self.video_dir, video_name)
-            csv_path = os.path.join(self.csv_dir, video_name.replace('.mp4', '.csv'))
-            if not os.path.exists(csv_path):
-                continue
-            df = pd.read_csv(csv_path)
-            cap = cv2.VideoCapture(video_path)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            duration = frame_count / fps
-            clip_frames = self.clip_length * fps
-            num_clips = int(frame_count // clip_frames)
-            for i in range(num_clips):
-                start_frame = i * clip_frames
-                end_frame = start_frame + clip_frames
-                highlight = any((df['start'] <= start_frame/fps) & (df['end'] >= end_frame/fps))
-                clips.append((video_path, start_frame, end_frame))
-                labels.append(int(highlight))
-            cap.release()
+        for expedition_dir in os.listdir(self.video_dir):
+            if expedition_dir.startswith("EX"):
+                video_expedition_dir = os.path.join(self.video_dir, expedition_dir)
+                csv_expedition_dir = os.path.join(self.csv_dir, expedition_dir)
+                for dive_dir in os.listdir(video_expedition_dir):
+                    if dive_dir.startswith("EX"):
+                        video_dive_dir = os.path.join(video_expedition_dir, dive_dir)
+                        compressed_dir = os.path.join(video_dive_dir, "Compressed")
+                        csv_file = os.path.join(csv_expedition_dir, f"SeaTubeAnnotations_{dive_dir}.csv")
+                        if not os.path.exists(csv_file):
+                            continue
+                        df = pd.read_csv(csv_file)
+
+                        # Check if the Compressed folder exists
+                        if not os.path.exists(compressed_dir):
+                            # If not, look for tar archives in the dive directory
+                            tar_files = [f for f in os.listdir(video_dive_dir) if f.endswith('.tar')]
+                            if len(tar_files) > 0:
+                                # Extract the tar archives to the Compressed folder
+                                os.makedirs(compressed_dir)
+                                for tar_file in tar_files:
+                                    with tarfile.open(os.path.join(video_dive_dir, tar_file), 'r') as tar_ref:
+                                        tar_ref.extractall(compressed_dir)
+                            else:
+                                continue  # Skip this dive if no Compressed folder or tar archives found
+
+                        for video_name in os.listdir(compressed_dir):
+                            if not video_name.endswith('_ROVHD_Low.mp4'):
+                                continue
+
+                            # Extract timestamp from the video file name
+                            video_timestamp = video_name.split('_')[2]
+                            video_start_time = datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
+
+                            video_path = os.path.join(compressed_dir, video_name)
+                            cap = cv2.VideoCapture(video_path)
+                            fps = cap.get(cv2.CAP_PROP_FPS)
+                            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                            duration = frame_count / fps
+                            clip_frames = self.clip_length * fps
+                            num_clips = int(frame_count // clip_frames)
+
+                            for i in range(num_clips):
+                                start_frame = i * clip_frames
+                                end_frame = start_frame + clip_frames
+                                clip_end_time = video_start_time + timedelta(seconds=end_frame / fps)
+
+                                # Filter annotations based on Taxon Path and timestamp range
+                                filtered_df = df[(df['Start Date'] >= video_start_time) & (df['End Date'] <= clip_end_time)]
+                                filtered_df = filtered_df[filtered_df['Taxon Path'].str.contains('Biology / Organism')]
+
+                                # Validate timestamp range
+                                if not filtered_df.empty:
+                                    annotation_start_time = filtered_df['Start Date'].min()
+                                    annotation_end_time = filtered_df['End Date'].max()
+
+                                    if annotation_start_time < video_start_time or annotation_end_time > clip_end_time:
+                                        print(f"Warning: Annotation timestamps outside clip range for {video_name}, clip {i}")
+                                        # Handle the misalignment based on your requirements
+
+                                highlight = len(filtered_df) > 0
+                                clips.append((video_path, start_frame, end_frame))
+                                labels.append(int(highlight))
+
+                            cap.release()
+
         return clips, labels
 
     def __len__(self):
