@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Highlight Detection</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center">Video Highlight Detection</h1>
+        <div class="row justify-content-center mt-4">
+            <div class="col-md-6">
+                <form id="video-form" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="video-input">Select a video:</label>
+                        <input type="file" class="form-control-file" id="video-input" name="video" accept="video/*" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Process Video</button>
+                </form>
+                <div id="result" class="mt-4"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        $(document).ready(function() {
+            $('#video-form').submit(function(event) {
+                event.preventDefault();
+                var formData = new FormData(this);
+                $.ajax({
+                    url: '/process_video',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    beforeSend: function() {
+                        $('#result').html('<div class="spinner-border text-primary" role="status"><span class="sr-only">Processing...</span></div>');
+                    },
+                    success: function(response) {
+                        var csvUrl = response.csv_url;
+                        var downloadLink = '<a href="' + csvUrl + '" class="btn btn-success" download>Download CSV</a>';
+                        $('#result').html('<p>Video processed successfully!</p>' + downloadLink);
+                    },
+                    error: function(xhr, status, error) {
+                        $('#result').html('<p class="text-danger">Error processing video: ' + error + '</p>');
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
