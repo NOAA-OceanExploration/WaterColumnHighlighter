@@ -74,8 +74,6 @@ class VideoDataset(Dataset):
     def _load_clips_and_labels(self):
         clips = []
         labels = []
-        extraction_completed = False
-
         for dive_dir in os.listdir(self.video_dir):
             if dive_dir.startswith("EX"):
                 video_dive_dir = os.path.join(self.video_dir, dive_dir)
@@ -120,15 +118,6 @@ class VideoDataset(Dataset):
                 df = pd.read_csv(csv_file)
                 print(f"Processing dive: {dive_dir}")
                 
-                if not extraction_completed:
-                    if os.path.exists(tar_file):
-                        # Extract video files from the tar archive
-                        with tarfile.open(tar_file, 'r') as tar:
-                            tar.extractall(path=compressed_dir)
-                        extraction_completed = True
-                    else:
-                        print(f"Compressed.tar file not found for dive: {dive_dir}")
-                
                 if os.path.exists(compressed_dir):
                     # Process extracted video files
                     for video_name in os.listdir(compressed_dir):
@@ -137,8 +126,15 @@ class VideoDataset(Dataset):
                         
                         video_path = os.path.join(compressed_dir, video_name)
                         clips, labels = self._process_video(video_path, df)
+                elif os.path.exists(tar_file):
+                    # Extract video files directly from the tar archive and process them
+                    with tarfile.open(tar_file, 'r') as tar:
+                        for member in tar.getmembers():
+                            if member.name.endswith('_ROVHD_Low.mp4'):
+                                video_file = tar.extractfile(member)
+                                clips, labels = self._process_video(video_file, df)
                 else:
-                    print(f"Compressed directory not found for dive: {dive_dir}")
+                    print(f"Neither Compressed directory nor Compressed.tar file found for dive: {dive_dir}")
         
         print(f"Total clips: {len(clips)}")
         print(f"Total labels: {len(labels)}")
@@ -292,14 +288,25 @@ if __name__ == '__main__':
         ToTensor(),
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-    dataset = VideoDataset(
-        video_dir=video_dir,
-        csv_dir=csv_dir,
-        clip_length=config['training']['clip_length'],
-        transform=transform
-    )
-
-    print(f"Dataset created with {len(dataset)} clips")
+    
+    # Check if the extracted dataset exists
+    if os.path.exists('extracted_dataset.pt'):
+        # Load the saved dataset from disk
+        dataset = torch.load('extracted_dataset.pt')
+        print("Loaded extracted dataset from disk.")
+    else:
+        # Create a new instance of VideoDataset
+        dataset = VideoDataset(
+            video_dir=video_dir,
+            csv_dir=csv_dir,
+            clip_length=config['training']['clip_length'],
+            transform=transform
+        )
+        print(f"Dataset created with {len(dataset)} clips")
+        
+        # Save the extracted dataset to disk
+        torch.save(dataset, 'extracted_dataset.pt')
+        print("Saved extracted dataset to disk.")
 
     # Perform k-fold cross-validation
     k = config['training']['k_folds']
