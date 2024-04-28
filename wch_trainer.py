@@ -9,6 +9,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from moviepy.editor import VideoFileClip
 import numpy as np
+from PIL import Image
 import os
 import argparse
 import datetime
@@ -74,6 +75,23 @@ class VideoDataset(Dataset):
     def _load_clips_and_labels(self):
         clips = []
         labels = []
+        
+        # Count the total number of video files to be processed
+        total_videos = 0
+        for dive_dir in os.listdir(self.video_dir):
+            if dive_dir.startswith("EX"):
+                video_dive_dir = os.path.join(self.video_dir, dive_dir)
+                compressed_dir = os.path.join(video_dive_dir, "Compressed")
+                tar_file = os.path.join(video_dive_dir, "Compressed.tar")
+                
+                if os.path.exists(compressed_dir):
+                    total_videos += len([f for f in os.listdir(compressed_dir) if f.endswith('_ROVHD_Low.mp4')])
+                elif os.path.exists(tar_file):
+                    with tarfile.open(tar_file, 'r') as tar:
+                        total_videos += len([f for f in tar.getnames() if f.endswith('_ROVHD_Low.mp4')])
+        
+        processed_videos = 0
+        
         for dive_dir in os.listdir(self.video_dir):
             if dive_dir.startswith("EX"):
                 video_dive_dir = os.path.join(self.video_dir, dive_dir)
@@ -126,6 +144,11 @@ class VideoDataset(Dataset):
                         
                         video_path = os.path.join(compressed_dir, video_name)
                         clips, labels = self._process_video(video_path, df)
+                        
+                        processed_videos += 1
+                        percentage_completed = (processed_videos / total_videos) * 100
+                        print(f"Extraction progress: {percentage_completed:.2f}%")
+                
                 elif os.path.exists(tar_file):
                     # Extract video files directly from the tar archive and process them
                     with tarfile.open(tar_file, 'r') as tar:
@@ -133,16 +156,23 @@ class VideoDataset(Dataset):
                             if member.name.endswith('_ROVHD_Low.mp4'):
                                 video_file = tar.extractfile(member)
                                 clips, labels = self._process_video(video_file, df)
+                                
+                                processed_videos += 1
+                                percentage_completed = (processed_videos / total_videos) * 100
+                                print(f"Extraction progress: {percentage_completed:.2f}%")
+                
                 else:
                     print(f"Neither Compressed directory nor Compressed.tar file found for dive: {dive_dir}")
         
         print(f"Total clips: {len(clips)}")
         print(f"Total labels: {len(labels)}")
         return clips, labels
-    
+        
     def _process_video(self, video_file, df):
         clips = []
         labels = []
+        target_fps = 30
+        clip_frames = self.clip_length * target_fps  # Number of frames per clip
 
         if isinstance(video_file, str):
             video_name = os.path.basename(video_file)
@@ -153,41 +183,40 @@ class VideoDataset(Dataset):
         else:
             video_name = video_file.name.lstrip('/')
             video_timestamp = video_name.split('_')[2]
-            
+
             # Convert the video file to a supported format
             temp_dir = tempfile.mkdtemp()
             temp_video_path = os.path.join(temp_dir, 'temp_video.mp4')
             with open(temp_video_path, 'wb') as f:
                 f.write(video_file.read())
             convert_video(temp_video_path, temp_video_path)
-            
+
             # Read the converted video file
             cap = cv2.VideoCapture(temp_video_path)
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
+
             # Remove the temporary directory
             shutil.rmtree(temp_dir)
 
         video_start_time = datetime.datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
 
-        duration = frame_count / fps
-        clip_frames = self.clip_length * fps
-        num_clips = int(frame_count // clip_frames)
-
         # Specify the format of the datetime strings in the 'Start Date' and 'End Date' columns
         datetime_format = '%Y-%m-%d %H:%M:%S'
-        
+
         # Convert 'Start Date' and 'End Date' columns to datetime
         df['Start Date'] = pd.to_datetime(df['Start Date'], format=datetime_format, errors='coerce')
         df['End Date'] = pd.to_datetime(df['End Date'], format=datetime_format, errors='coerce')
-        
+
         # Drop rows with invalid datetime values
         df = df.dropna(subset=['Start Date', 'End Date'])
 
-        for i in range(num_clips):
-            start_frame = i * clip_frames
-            end_frame = start_frame + clip_frames
+        # Calculate the frame step based on the original fps and target fps
+        frame_step = int(fps / target_fps)
+
+        for i in range(0, frame_count, clip_frames * frame_step):
+            start_frame = i
+            end_frame = min(start_frame + clip_frames * frame_step, frame_count)
             clip_end_time = video_start_time + timedelta(seconds=end_frame / fps)
 
             # Filter annotations based on Taxon Path and timestamp range
@@ -209,11 +238,20 @@ class VideoDataset(Dataset):
             else:
                 try:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                    ret, frame = cap.read()
-                    if ret:
-                        clips.append((frame, start_frame, end_frame))
-                    else:
-                        print(f"Error: Failed to read frame from video for {video_name}, clip {i}")
+                    frames = []
+                    for _ in range(clip_frames):
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        if cap.get(cv2.CAP_PROP_POS_FRAMES) % frame_step == 0:
+                            frames.append(frame)
+
+                    # Pad frames if the clip has fewer frames than expected
+                    if len(frames) < clip_frames:
+                        padding_frames = [np.zeros_like(frames[0]) for _ in range(clip_frames - len(frames))]
+                        frames.extend(padding_frames)
+
+                    clips.append((frames, start_frame, end_frame))
                 except:
                     print(f"Error: Failed to extract clip from video for {video_name}, clip {i}")
             labels.append(int(highlight))
@@ -235,6 +273,7 @@ class VideoDataset(Dataset):
             if not ret:
                 break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = Image.fromarray(frame)  # Convert NumPy array to PIL image
             if self.transform:
                 frame = self.transform(frame)
             frames.append(frame)
@@ -289,11 +328,16 @@ if __name__ == '__main__':
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
+    # Specify the directory to save the extracted dataset
+    dataset_dir = "/Volumes/My Passport for Mac/Data/Dataset"
+    os.makedirs(dataset_dir, exist_ok=True)
+    dataset_path = os.path.join(dataset_dir, "extracted_dataset.pt")
+    
     # Check if the extracted dataset exists
-    if os.path.exists('extracted_dataset.pt'):
+    if os.path.exists(dataset_path):
         # Load the saved dataset from disk
-        dataset = torch.load('extracted_dataset.pt')
-        print("Loaded extracted dataset from disk.")
+        dataset = torch.load(dataset_path)
+        print(f"Loaded extracted dataset from {dataset_path}")
     else:
         # Create a new instance of VideoDataset
         dataset = VideoDataset(
@@ -305,8 +349,8 @@ if __name__ == '__main__':
         print(f"Dataset created with {len(dataset)} clips")
         
         # Save the extracted dataset to disk
-        torch.save(dataset, 'extracted_dataset.pt')
-        print("Saved extracted dataset to disk.")
+        torch.save(dataset, dataset_path)
+        print(f"Saved extracted dataset to {dataset_path}")
 
     # Perform k-fold cross-validation
     k = config['training']['k_folds']
