@@ -1,43 +1,34 @@
-import cv2
+import os
 import pandas as pd
 import torch
 import torch.nn as nn
+import cv2
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import Compose, Resize, Normalize, ToTensor, RandomCrop, RandomHorizontalFlip, ColorJitter
 from torchvision.models import resnet50
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from moviepy.editor import VideoFileClip
-import numpy as np
 from PIL import Image
-import os
 import argparse
 import datetime
 from datetime import timedelta
 import toml
-import tempfile
 import shutil
 import wandb
-import xtarfile as tarfile
 from sklearn.model_selection import KFold
-
-import shutil
+import tarfile
 import tempfile
-from moviepy.editor import VideoFileClip
-import os
 
 # Path to the temporary directory on the external drive
 temp_dir = "/Volumes/My Passport for Mac/Data/Temp"
-
-# Check if the directory exists, and create it if it does not
 if not os.path.exists(temp_dir):
     os.makedirs(temp_dir)
 
-# Now set it as the default directory for temporary files
-import tempfile
 tempfile.tempdir = temp_dir
 
 def convert_video(input_path, output_path):
+    from moviepy.editor import VideoFileClip
     try:
         with VideoFileClip(input_path) as clip:
             clip.write_videofile(output_path, codec='libx264')
@@ -45,15 +36,12 @@ def convert_video(input_path, output_path):
     except Exception as e:
         print(f"Failed to convert video {input_path} to {output_path}: {e}")
     finally:
-        # Be careful with cleanup: Ensure you're not deleting needed files
         if os.path.exists(output_path) and "need_cleanup" in output_path:
             os.remove(output_path)
             print(f"Temporary file deleted: {output_path}")
         else:
             print(f"No cleanup needed for: {output_path}")
 
-
-# Increase open file limit
 import resource
 resource.setrlimit(resource.RLIMIT_NOFILE, (2048, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
 
@@ -61,176 +49,122 @@ resource.setrlimit(resource.RLIMIT_NOFILE, (2048, resource.getrlimit(resource.RL
 config = toml.load('config.toml')
 
 # THEN Initialize wandb with the loaded configuration
-wandb.init(project="video_highlight_detection", config=config['training'])
+wandb.init(project="video_highlight_detection", entity="patrickallencooper", config=config['training'])
 config_wandb = wandb.config
 
 class VideoDataset(Dataset):
     def __init__(self, video_dir, csv_dir, clip_length=10, transform=None):
+        print("Initializing VideoDataset")
         self.video_dir = video_dir
         self.csv_dir = csv_dir
         self.clip_length = clip_length
         self.transform = transform
         self.clips, self.labels = self._load_clips_and_labels()
 
+    def _find_csv_file(self, dive_dir):
+        expedition_dir = dive_dir.split('_')[0]
+        csv_expedition_dir = os.path.join(self.csv_dir, expedition_dir)
+        if os.path.exists(csv_expedition_dir):
+            csv_files = [f for f in os.listdir(csv_expedition_dir) if f.endswith('.csv')]
+            if csv_files:
+                return os.path.join(csv_expedition_dir, csv_files[0])
+        return None
+
     def _load_clips_and_labels(self):
         clips = []
         labels = []
-        
-        # Count the total number of video files to be processed
-        total_videos = 0
+
+        print("Loading clips and labels")
+
         for dive_dir in os.listdir(self.video_dir):
             if dive_dir.startswith("EX"):
                 video_dive_dir = os.path.join(self.video_dir, dive_dir)
                 compressed_dir = os.path.join(video_dive_dir, "Compressed")
                 tar_file = os.path.join(video_dive_dir, "Compressed.tar")
-                
-                if os.path.exists(compressed_dir):
-                    total_videos += len([f for f in os.listdir(compressed_dir) if f.endswith('_ROVHD_Low.mp4')])
-                elif os.path.exists(tar_file):
-                    with tarfile.open(tar_file, 'r') as tar:
-                        total_videos += len([f for f in tar.getnames() if f.endswith('_ROVHD_Low.mp4')])
-        
-        processed_videos = 0
-        
-        for dive_dir in os.listdir(self.video_dir):
-            if dive_dir.startswith("EX"):
-                video_dive_dir = os.path.join(self.video_dir, dive_dir)
-                compressed_dir = os.path.join(video_dive_dir, "Compressed")
-                tar_file = os.path.join(video_dive_dir, "Compressed.tar")
-                
-                # Find the corresponding CSV file for the dive based on timestamp range
-                csv_file = None
-                for expedition_dir in os.listdir(self.csv_dir):
-                    if expedition_dir.startswith("EX") and dive_dir.startswith(expedition_dir):
-                        csv_expedition_dir = os.path.join(self.csv_dir, expedition_dir)
-                        csv_files = [f for f in os.listdir(csv_expedition_dir) if f.endswith('.csv')]
-                        for csv_f in csv_files:
-                            start_timestamp, end_timestamp = csv_f.split('_')[1:]
-                            start_timestamp = start_timestamp.split('.')[0]
-                            end_timestamp = end_timestamp.split('.')[0]
-                            
-                            if os.path.exists(compressed_dir):
-                                video_files = [f for f in os.listdir(compressed_dir) if f.endswith('_ROVHD_Low.mp4')]
-                            elif os.path.exists(tar_file):
-                                with tarfile.open(tar_file, 'r') as tar:
-                                    video_files = [f for f in tar.getnames() if f.endswith('_ROVHD_Low.mp4')]
-                            else:
-                                video_files = []
-                            
-                            for video_file in video_files:
-                                video_timestamp = video_file.split('_')[2]
-                                if start_timestamp <= video_timestamp <= end_timestamp:
-                                    csv_file = os.path.join(csv_expedition_dir, csv_f)
-                                    break
-                            
-                            if csv_file is not None:
-                                break
-                        
-                        if csv_file is not None:
-                            break
-                
+
+                csv_file = self._find_csv_file(dive_dir)
+
                 if csv_file is None:
                     print(f"CSV file not found for dive: {dive_dir}")
                     continue
-                
+
                 df = pd.read_csv(csv_file)
                 print(f"Processing dive: {dive_dir}")
-                
+
                 if os.path.exists(compressed_dir):
-                    # Process extracted video files
                     for video_name in os.listdir(compressed_dir):
-                        if not video_name.endswith('_ROVHD_Low.mp4'):
+                        if not video_name.endswith('.mp4'):
                             continue
-                        
+
                         video_path = os.path.join(compressed_dir, video_name)
-                        clips, labels = self._process_video(video_path, df)
-                        
-                        processed_videos += 1
-                        percentage_completed = (processed_videos / total_videos) * 100
-                        print(f"Extraction progress: {percentage_completed:.2f}%")
-                
+                        clip_labels = self._process_video(video_path, df)
+                        clips.extend(clip_labels[0])
+                        labels.extend(clip_labels[1])
+
                 elif os.path.exists(tar_file):
-                    # Extract video files directly from the tar archive and process them
                     with tarfile.open(tar_file, 'r') as tar:
                         for member in tar.getmembers():
-                            if member.name.endswith('_ROVHD_Low.mp4'):
+                            if member.name.endswith('.mp4'):
                                 video_file = tar.extractfile(member)
-                                clips, labels = self._process_video(video_file, df)
-                                
-                                processed_videos += 1
-                                percentage_completed = (processed_videos / total_videos) * 100
-                                print(f"Extraction progress: {percentage_completed:.2f}%")
-                
+                                clip_labels = self._process_video(video_file, df)
+                                clips.extend(clip_labels[0])
+                                labels.extend(clip_labels[1])
+
                 else:
                     print(f"Neither Compressed directory nor Compressed.tar file found for dive: {dive_dir}")
-        
+
         print(f"Total clips: {len(clips)}")
         print(f"Total labels: {len(labels)}")
         return clips, labels
-        
+
     def _process_video(self, video_file, df):
         clips = []
         labels = []
-        target_fps = 30
-        clip_frames = self.clip_length * target_fps  # Number of frames per clip
+        target_fps = 29
+        clip_frames = self.clip_length * target_fps
 
         if isinstance(video_file, str):
             video_name = os.path.basename(video_file)
-            video_timestamp = video_name.split('_')[2]
+            video_timestamp = video_name.split('_')[1] if '_' in video_name else None
             cap = cv2.VideoCapture(video_file)
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         else:
             video_name = video_file.name.lstrip('/')
-            video_timestamp = video_name.split('_')[2]
-
-            # Convert the video file to a supported format
+            video_timestamp = video_name.split('_')[1] if '_' in video_name else None
             temp_dir = tempfile.mkdtemp()
             temp_video_path = os.path.join(temp_dir, 'temp_video.mp4')
             with open(temp_video_path, 'wb') as f:
                 f.write(video_file.read())
             convert_video(temp_video_path, temp_video_path)
-
-            # Read the converted video file
             cap = cv2.VideoCapture(temp_video_path)
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-            # Remove the temporary directory
             shutil.rmtree(temp_dir)
 
+        if not video_timestamp:
+            print(f"Skipping video file with unexpected naming format: {video_name}")
+            return clips, labels
+
         video_start_time = datetime.datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
-
-        # Specify the format of the datetime strings in the 'Start Date' and 'End Date' columns
         datetime_format = '%Y-%m-%d %H:%M:%S'
-
-        # Convert 'Start Date' and 'End Date' columns to datetime
         df['Start Date'] = pd.to_datetime(df['Start Date'], format=datetime_format, errors='coerce')
         df['End Date'] = pd.to_datetime(df['End Date'], format=datetime_format, errors='coerce')
-
-        # Drop rows with invalid datetime values
         df = df.dropna(subset=['Start Date', 'End Date'])
-
-        # Calculate the frame step based on the original fps and target fps
         frame_step = int(fps / target_fps)
 
         for i in range(0, frame_count, clip_frames * frame_step):
             start_frame = i
             end_frame = min(start_frame + clip_frames * frame_step, frame_count)
             clip_end_time = video_start_time + timedelta(seconds=end_frame / fps)
-
-            # Filter annotations based on Taxon Path and timestamp range
             filtered_df = df[(df['Start Date'] >= video_start_time) & (df['End Date'] <= clip_end_time)]
             filtered_df = filtered_df[filtered_df['Taxon Path'].str.contains('Biology / Organism')]
 
-            # Validate timestamp range
             if not filtered_df.empty:
                 annotation_start_time = filtered_df['Start Date'].min()
                 annotation_end_time = filtered_df['End Date'].max()
-
                 if annotation_start_time < video_start_time or annotation_end_time > clip_end_time:
                     print(f"Warning: Annotation timestamps outside clip range for {video_name}, clip {i}")
-                    # Handle the misalignment based on your requirements
 
             highlight = len(filtered_df) > 0
             if isinstance(video_file, str):
@@ -245,15 +179,12 @@ class VideoDataset(Dataset):
                             break
                         if cap.get(cv2.CAP_PROP_POS_FRAMES) % frame_step == 0:
                             frames.append(frame)
-
-                    # Pad frames if the clip has fewer frames than expected
                     if len(frames) < clip_frames:
                         padding_frames = [np.zeros_like(frames[0]) for _ in range(clip_frames - len(frames))]
                         frames.extend(padding_frames)
-
                     clips.append((frames, start_frame, end_frame))
-                except:
-                    print(f"Error: Failed to extract clip from video for {video_name}, clip {i}")
+                except Exception as e:
+                    print(f"Error: Failed to extract clip from video for {video_name}, clip {i}: {e}")
             labels.append(int(highlight))
 
         if isinstance(video_file, str):
@@ -273,7 +204,7 @@ class VideoDataset(Dataset):
             if not ret:
                 break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = Image.fromarray(frame)  # Convert NumPy array to PIL image
+            frame = Image.fromarray(frame)
             if self.transform:
                 frame = self.transform(frame)
             frames.append(frame)
@@ -286,14 +217,11 @@ class HighlightDetectionModel(nn.Module):
     def __init__(self, hidden_dim, num_layers):
         super(HighlightDetectionModel, self).__init__()
         self.resnet = resnet50(pretrained=True)
-        self.resnet.fc = nn.Identity()  # Remove the final fully connected layer
-        
-        # Get the output size of the ResNet model
+        self.resnet.fc = nn.Identity()
         with torch.no_grad():
             dummy_input = torch.rand(1, 3, 224, 224)
             resnet_output = self.resnet(dummy_input)
             resnet_output_size = resnet_output.size(1)
-        
         self.lstm = nn.LSTM(resnet_output_size, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, 1)
 
@@ -306,19 +234,8 @@ class HighlightDetectionModel(nn.Module):
         x = self.fc(x[:, -1, :])
         return torch.sigmoid(x)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Video Highlight Detection Training')
-    parser.add_argument('--video_dir', type=str, required=True, help='Path to the video directory')
-    parser.add_argument('--csv_dir', type=str, required=True, help='Path to the CSV directory')
-    args = parser.parse_args()
-
-    video_dir = args.video_dir
-    csv_dir = args.csv_dir
-
-    print(f"Video directory: {video_dir}")
-    print(f"CSV directory: {csv_dir}")
-
-    # Initialize dataset with data augmentation
+def train(video_dir, csv_dir):
+    print("Starting training")
     transform = Compose([
         Resize((224, 224)),
         RandomCrop((200, 200)),
@@ -327,19 +244,15 @@ if __name__ == '__main__':
         ToTensor(),
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-    
-    # Specify the directory to save the extracted dataset
+
     dataset_dir = "/Volumes/My Passport for Mac/Data/Dataset"
     os.makedirs(dataset_dir, exist_ok=True)
     dataset_path = os.path.join(dataset_dir, "extracted_dataset.pt")
-    
-    # Check if the extracted dataset exists
+
     if os.path.exists(dataset_path):
-        # Load the saved dataset from disk
         dataset = torch.load(dataset_path)
         print(f"Loaded extracted dataset from {dataset_path}")
     else:
-        # Create a new instance of VideoDataset
         dataset = VideoDataset(
             video_dir=video_dir,
             csv_dir=csv_dir,
@@ -347,37 +260,33 @@ if __name__ == '__main__':
             transform=transform
         )
         print(f"Dataset created with {len(dataset)} clips")
-        
-        # Save the extracted dataset to disk
         torch.save(dataset, dataset_path)
         print(f"Saved extracted dataset to {dataset_path}")
 
-    # Perform k-fold cross-validation
     k = config['training']['k_folds']
     kfold = KFold(n_splits=k, shuffle=True)
-
     models = []
 
     for fold, (train_indices, val_indices) in enumerate(kfold.split(dataset)):
         print(f'Fold {fold+1}')
-        
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         val_dataset = torch.utils.data.Subset(dataset, val_indices)
-        
+
         print(f"Training set size: {len(train_dataset)}")
         print(f"Validation set size: {len(val_dataset)}")
 
-        train_dataloader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True)
-        val_dataloader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
+        train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 
         print(f"Training dataloader created with {len(train_dataloader)} batches")
         print(f"Validation dataloader created with {len(val_dataloader)} batches")
 
-        # Initialize model, loss, optimizer, and scheduler
         model = HighlightDetectionModel(
             hidden_dim=config['training']['hidden_dim'],
             num_layers=config['training']['num_layers']
         )
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
         criterion = nn.BCELoss()
         optimizer = Adam(model.parameters(), lr=config['training']['learning_rate'])
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
@@ -388,12 +297,12 @@ if __name__ == '__main__':
         early_stopping_patience = config['training']['early_stopping_patience']
         early_stopping_counter = 0
 
-        # Training loop with wandb logging
-        for epoch in range(config['training']['num_epochs']):
-            print(f'Epoch {epoch+1}/{config["training"]["num_epochs"]}')
+        for epoch in range(1):
+            print(f'Epoch {epoch+1}/1')
             model.train()
             train_loss = 0.0
-            for clips, labels in train_dataloader:
+            for batch_idx, (clips, labels) in enumerate(train_dataloader):
+                clips, labels = clips.to(device), labels.to(device)
                 optimizer.zero_grad()
                 outputs = model(clips)
                 labels = labels.view(-1, 1).float()
@@ -402,6 +311,15 @@ if __name__ == '__main__':
                 nn.utils.clip_grad_norm_(model.parameters(), config['training']['gradient_clip'])
                 optimizer.step()
                 train_loss += loss.item()
+                print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}')
+
+                # Log metrics by batch
+                wandb.log({
+                    "fold": fold + 1,
+                    "epoch": epoch + 1,
+                    "batch": batch_idx + 1,
+                    "train_loss": loss.item()
+                })
 
             train_loss /= len(train_dataloader)
 
@@ -410,7 +328,8 @@ if __name__ == '__main__':
             val_correct = 0
             val_total = 0
             with torch.no_grad():
-                for clips, labels in val_dataloader:
+                for batch_idx, (clips, labels) in enumerate(val_dataloader):
+                    clips, labels = clips.to(device), labels.to(device)
                     outputs = model(clips)
                     labels = labels.view(-1, 1).float()
                     loss = criterion(outputs, labels)
@@ -418,27 +337,33 @@ if __name__ == '__main__':
                     predicted = (outputs >= 0.5).float()
                     val_correct += (predicted == labels).sum().item()
                     val_total += labels.size(0)
+                    print(f'Validation Batch {batch_idx+1}/{len(val_dataloader)}, Loss: {loss.item()}')
+
+                    # Log validation metrics by batch
+                    wandb.log({
+                        "fold": fold + 1,
+                        "epoch": epoch + 1,
+                        "batch": batch_idx + 1,
+                        "val_loss": loss.item()
+                    })
 
             val_loss /= len(val_dataloader)
             val_accuracy = val_correct / val_total
 
             print(f'Epoch {epoch+1}, Train Loss: {train_loss}, Val Loss: {val_loss}, Val Accuracy: {val_accuracy}')
 
-            # Log metrics to wandb
             wandb.log({
                 "fold": fold + 1,
                 "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "val_loss": val_loss,
+                "train_loss_avg": train_loss,
+                "val_loss_avg": val_loss,
                 "val_accuracy": val_accuracy,
                 "learning_rate": optimizer.param_groups[0]['lr']
             })
 
-            # Update learning rate based on validation accuracy
             scheduler.step(val_accuracy)
 
-            # Save model checkpoint
-            checkpoint_path = f"{config['paths']['model_save_path']}_fold_{fold+1}_checkpoint_{epoch+1}.pth"
+            checkpoint_path = f"{config['paths']['model_save_path']}_fold_{fold+1}_epoch_{epoch+1}_batch_{64}.pth"
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -450,11 +375,10 @@ if __name__ == '__main__':
             }, checkpoint_path)
             print(f'Checkpoint saved to {checkpoint_path}')
 
-            # Save the best model based on validation accuracy
             if val_accuracy > best_val_accuracy:
                 best_val_accuracy = val_accuracy
                 early_stopping_counter = 0
-                best_model_path = f"{config['paths']['model_save_path']}_fold_{fold+1}_best.pth"
+                best_model_path = f"{config['paths']['model_save_path']}_fold_{fold+1}_best_val_acc_{best_val_accuracy:.4f}.pth"
                 torch.save(model.state_dict(), best_model_path)
                 print(f'Best model saved to {best_model_path}')
             else:
@@ -463,37 +387,78 @@ if __name__ == '__main__':
                     print(f'Early stopping at epoch {epoch+1}')
                     break
 
-            # Save the best model for the current fold
-            best_model_path = f"{config['paths']['model_save_path']}_fold_{fold+1}_best.pth"
-            model.load_state_dict(torch.load(best_model_path))
-            models.append(model)
+        best_model_path = f"{config['paths']['model_save_path']}_fold_{fold+1}_best_val_acc_{best_val_accuracy:.4f}.pth"
+        model.load_state_dict(torch.load(best_model_path))
+        models.append(model)
 
-        # Evaluate the ensemble model
-        ensemble_correct = 0
-        ensemble_total = 0
-        with torch.no_grad():
-            for clips, labels in val_dataloader:
-                ensemble_outputs = torch.zeros(clips.size(0), 1)
-                for model in models:
-                    model.eval()
-                    outputs = model(clips)
-                    ensemble_outputs += outputs
-                ensemble_outputs /= len(models)
-                predicted = (ensemble_outputs >= 0.5).float()
-                labels = labels.view(-1, 1).float()
-                ensemble_correct += (predicted == labels).sum().item()
-                ensemble_total += labels.size(0)
+    return models, dataset
 
-        ensemble_accuracy = ensemble_correct / ensemble_total
-        print(f'Ensemble Accuracy: {ensemble_accuracy}')
+def test(models, dataset, mode='test'):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Log the ensemble accuracy to wandb
-        wandb.log({"ensemble_accuracy": ensemble_accuracy})
+    data_loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    correct = 0
+    total = 0
+    false_positives = 0
+    false_negatives = 0
+    results = []
 
-        # Save the ensemble model
-        ensemble_model_path = config['paths']['model_save_path'] + '_ensemble.pth'
-        torch.save(models, ensemble_model_path)
-        print(f'Ensemble model saved to {ensemble_model_path}')
+    with torch.no_grad():
+        for clips, labels in data_loader:
+            clips, labels = clips.to(device), labels.to(device)
+            ensemble_outputs = torch.zeros(clips.size(0), 1).to(device)
+            for model in models:
+                model.eval()
+                outputs = model(clips)
+                ensemble_outputs += outputs
+            ensemble_outputs /= len(models)
+            predicted = (ensemble_outputs >= 0.5).float()
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
 
-        # Finish the wandb run at the end of training
-        wandb.finish()
+            false_positives += ((predicted == 1) & (labels == 0)).sum().item()
+            false_negatives += ((predicted == 0) & (labels == 1)).sum().item()
+
+            for i in range(len(labels)):
+                results.append(f"Label: {labels[i].item()}, Predicted: {predicted[i].item()}")
+
+    accuracy = correct / total
+
+    with open(f"{mode}_results.txt", "w") as f:
+        f.write(f"Accuracy: {accuracy}\n")
+        f.write(f"False Positives: {false_positives}\n")
+        f.write(f"False Negatives: {false_negatives}\n")
+        f.write("Results:\n")
+        for result in results:
+            f.write(f"{result}\n")
+
+    print(f"{mode.capitalize()} Accuracy: {accuracy}")
+    print(f"False Positives: {false_positives}")
+    print(f"False Negatives: {false_negatives}")
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Video Highlight Detection Training')
+    parser.add_argument('--video_dir', type=str, required=True, help='Path to the video directory')
+    parser.add_argument('--csv_dir', type=str, required=True, help='Path to the CSV directory')
+    parser.add_argument('--mode', type=str, required=True, choices=['train', 'test'], help='Mode: train or test')
+    parser.add_argument('--model_paths', type=str, nargs='*', help='Paths to the trained models for testing')
+    args = parser.parse_args()
+
+    video_dir = args.video_dir
+    csv_dir = args.csv_dir
+
+    if args.mode == 'train':
+        models, dataset = train(video_dir, csv_dir)
+        test(models, dataset, mode='train')
+    elif args.mode == 'test':
+        dataset_dir = "/Volumes/My Passport for Mac/Data/Dataset"
+        dataset_path = os.path.join(dataset_dir, "extracted_dataset.pt")
+        dataset = torch.load(dataset_path)
+        model_paths = args.model_paths
+        models = [HighlightDetectionModel(
+            hidden_dim=config['training']['hidden_dim'],
+            num_layers=config['training']['num_layers']
+        ) for _ in model_paths]
+        for model, path in zip(models, model_paths):
+            model.load_state_dict(torch.load(path))
+        test(models, dataset, mode='test')

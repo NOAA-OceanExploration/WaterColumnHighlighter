@@ -1,8 +1,5 @@
 [paths]
-video_dir = "path/to/videos"
-csv_dir = "path/to/csvs"
-model_save_path = "path/to/save/model"
-s3_bucket = "your-s3-bucket-name"
+model_save_path = "/Users/patrickcooper/Documents/WaterColumnHighlighter/models"
 
 [training]
 batch_size = 4
