@@ -30,9 +30,9 @@ tempfile.tempdir = temp_dir
 def convert_video(input_path, output_path):
     from moviepy.editor import VideoFileClip
     try:
-        with VideoFileClip(input_path) as clip:
-            clip.write_videofile(output_path, codec='libx264')
-            print(f"Successfully converted {input_path} and saved to {output_path}")
+        clip = VideoFileClip(input_path)
+        clip.write_videofile(output_path, codec='libx264')
+        print(f"Successfully converted {input_path} and saved to {output_path}")
     except Exception as e:
         print(f"Failed to convert video {input_path} to {output_path}: {e}")
     finally:
@@ -46,7 +46,7 @@ import resource
 resource.setrlimit(resource.RLIMIT_NOFILE, (2048, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
 
 # Load configuration FIRST
-config = toml.load('config.toml')
+config = toml.load('../config.toml')
 
 # THEN Initialize wandb with the loaded configuration
 wandb.init(project="video_highlight_detection", entity="patrickallencooper", config=config['training'])
@@ -125,13 +125,14 @@ class VideoDataset(Dataset):
 
         if isinstance(video_file, str):
             video_name = os.path.basename(video_file)
-            video_timestamp = video_name.split('_')[1] if '_' in video_name else None
+            # Extract the timestamp part of the filename
+            video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
             cap = cv2.VideoCapture(video_file)
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         else:
             video_name = video_file.name.lstrip('/')
-            video_timestamp = video_name.split('_')[1] if '_' in video_name else None
+            video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
             temp_dir = tempfile.mkdtemp()
             temp_video_path = os.path.join(temp_dir, 'temp_video.mp4')
             with open(temp_video_path, 'wb') as f:
@@ -146,7 +147,12 @@ class VideoDataset(Dataset):
             print(f"Skipping video file with unexpected naming format: {video_name}")
             return clips, labels
 
-        video_start_time = datetime.datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
+        try:
+            video_start_time = datetime.datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
+        except ValueError:
+            print(f"Skipping video file with incorrect timestamp format: {video_name}")
+            return clips, labels
+
         datetime_format = '%Y-%m-%d %H:%M:%S'
         df['Start Date'] = pd.to_datetime(df['Start Date'], format=datetime_format, errors='coerce')
         df['End Date'] = pd.to_datetime(df['End Date'], format=datetime_format, errors='coerce')
@@ -190,6 +196,7 @@ class VideoDataset(Dataset):
         if isinstance(video_file, str):
             cap.release()
         return clips, labels
+
 
     def __len__(self):
         return len(self.clips)
@@ -245,7 +252,7 @@ def train(video_dir, csv_dir):
         Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    dataset_dir = "/Volumes/My Passport for Mac/Data/Dataset"
+    dataset_dir = temp_dir
     os.makedirs(dataset_dir, exist_ok=True)
     dataset_path = os.path.join(dataset_dir, "extracted_dataset.pt")
 
@@ -451,7 +458,7 @@ if __name__ == '__main__':
         models, dataset = train(video_dir, csv_dir)
         test(models, dataset, mode='train')
     elif args.mode == 'test':
-        dataset_dir = "/Volumes/My Passport for Mac/Data/Dataset"
+        dataset_dir = temp_dir
         dataset_path = os.path.join(dataset_dir, "extracted_dataset.pt")
         dataset = torch.load(dataset_path)
         model_paths = args.model_paths
