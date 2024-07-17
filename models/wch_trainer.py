@@ -19,6 +19,8 @@ import wandb
 from sklearn.model_selection import KFold
 import tarfile
 import tempfile
+import resource
+import signal
 
 # Path to the temporary directory on the external drive
 temp_dir = "/Volumes/My Passport for Mac/Data/Temp"
@@ -27,8 +29,35 @@ if not os.path.exists(temp_dir):
 
 tempfile.tempdir = temp_dir
 
+# Increase the limit on the number of open files
+soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (min(4096, hard_limit), hard_limit))
+
+# Handle SIGTERM to ensure proper cleanup
+def sigterm_handler(signum, frame):
+    print("Received SIGTERM, exiting gracefully...")
+    cleanup_semaphores()
+    exit(0)
+
+signal.signal(signal.SIGTERM, sigterm_handler)
+
+# Function to clean up semaphores
+def cleanup_semaphores():
+    import ctypes
+    libc = ctypes.CDLL('libc.so.6')
+    for i in range(4096):
+        try:
+            libc.semctl(i, 0, 0, 0)
+        except Exception:
+            pass
+
+# Call cleanup_semaphores at exit
+import atexit
+atexit.register(cleanup_semaphores)
+
 def convert_video(input_path, output_path):
     from moviepy.editor import VideoFileClip
+    clip = None
     try:
         clip = VideoFileClip(input_path)
         clip.write_videofile(output_path, codec='libx264')
@@ -36,14 +65,15 @@ def convert_video(input_path, output_path):
     except Exception as e:
         print(f"Failed to convert video {input_path} to {output_path}: {e}")
     finally:
+        if clip:
+            clip.reader.close()
+            if clip.audio:
+                clip.audio.reader.close_proc()
         if os.path.exists(output_path) and "need_cleanup" in output_path:
             os.remove(output_path)
             print(f"Temporary file deleted: {output_path}")
         else:
             print(f"No cleanup needed for: {output_path}")
-
-import resource
-resource.setrlimit(resource.RLIMIT_NOFILE, (2048, resource.getrlimit(resource.RLIMIT_NOFILE)[1]))
 
 # Load configuration FIRST
 config = toml.load('../config.toml')
@@ -125,7 +155,6 @@ class VideoDataset(Dataset):
 
         if isinstance(video_file, str):
             video_name = os.path.basename(video_file)
-            # Extract the timestamp part of the filename
             video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
             cap = cv2.VideoCapture(video_file)
             fps = cap.get(cv2.CAP_PROP_FPS)
@@ -196,7 +225,6 @@ class VideoDataset(Dataset):
         if isinstance(video_file, str):
             cap.release()
         return clips, labels
-
 
     def __len__(self):
         return len(self.clips)
@@ -282,8 +310,8 @@ def train(video_dir, csv_dir):
         print(f"Training set size: {len(train_dataset)}")
         print(f"Validation set size: {len(val_dataset)}")
 
-        train_dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-        val_dataloader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+        train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=2)
+        val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
 
         print(f"Training dataloader created with {len(train_dataloader)} batches")
         print(f"Validation dataloader created with {len(val_dataloader)} batches")
@@ -403,7 +431,7 @@ def train(video_dir, csv_dir):
 def test(models, dataset, mode='test'):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    data_loader = DataLoader(dataset, batch_size=64, shuffle=False)
+    data_loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=2)
     correct = 0
     total = 0
     false_positives = 0
