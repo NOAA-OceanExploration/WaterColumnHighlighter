@@ -23,7 +23,7 @@ import resource
 import signal
 
 # Path to the temporary directory on the external drive
-temp_dir = "/Volumes/My Passport for Mac/Data/Temp"
+temp_dir = "/media/arpg/TOSHIBA EXT/temp_dir"
 if not os.path.exists(temp_dir):
     os.makedirs(temp_dir)
 
@@ -89,7 +89,8 @@ class VideoDataset(Dataset):
         self.csv_dir = csv_dir
         self.clip_length = clip_length
         self.transform = transform
-        self.clips, self.labels = self._load_clips_and_labels()
+        self.partial_dataset_count = 0
+        self._load_clips_and_labels()
 
     def _find_csv_file(self, dive_dir):
         expedition_dir = dive_dir.split('_')[0]
@@ -101,9 +102,6 @@ class VideoDataset(Dataset):
         return None
 
     def _load_clips_and_labels(self):
-        clips = []
-        labels = []
-
         print("Loading clips and labels")
 
         for dive_dir in os.listdir(self.video_dir):
@@ -127,66 +125,51 @@ class VideoDataset(Dataset):
                             continue
 
                         video_path = os.path.join(compressed_dir, video_name)
-                        clip_labels = self._process_video(video_path, df)
-                        clips.extend(clip_labels[0])
-                        labels.extend(clip_labels[1])
+                        self._process_video(video_path, df)
 
                 elif os.path.exists(tar_file):
                     with tarfile.open(tar_file, 'r') as tar:
                         for member in tar.getmembers():
                             if member.name.endswith('.mp4'):
                                 video_file = tar.extractfile(member)
-                                clip_labels = self._process_video(video_file, df)
-                                clips.extend(clip_labels[0])
-                                labels.extend(clip_labels[1])
-
+                                temp_dir = tempfile.mkdtemp()
+                                temp_video_path = os.path.join(temp_dir, 'temp_video.mp4')
+                                with open(temp_video_path, 'wb') as f:
+                                    f.write(video_file.read())
+                                convert_video(temp_video_path, temp_video_path)
+                                self._process_video(temp_video_path, df)
+                                shutil.rmtree(temp_dir)
                 else:
                     print(f"Neither Compressed directory nor Compressed.tar file found for dive: {dive_dir}")
 
-        print(f"Total clips: {len(clips)}")
-        print(f"Total labels: {len(labels)}")
-        return clips, labels
-
     def _process_video(self, video_file, df):
-        clips = []
-        labels = []
         target_fps = 29
         clip_frames = self.clip_length * target_fps
 
-        if isinstance(video_file, str):
-            video_name = os.path.basename(video_file)
-            video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
-            cap = cv2.VideoCapture(video_file)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        else:
-            video_name = video_file.name.lstrip('/')
-            video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
-            temp_dir = tempfile.mkdtemp()
-            temp_video_path = os.path.join(temp_dir, 'temp_video.mp4')
-            with open(temp_video_path, 'wb') as f:
-                f.write(video_file.read())
-            convert_video(temp_video_path, temp_video_path)
-            cap = cv2.VideoCapture(temp_video_path)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            shutil.rmtree(temp_dir)
+        video_name = os.path.basename(video_file)
+        video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
+        cap = cv2.VideoCapture(video_file)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         if not video_timestamp:
             print(f"Skipping video file with unexpected naming format: {video_name}")
-            return clips, labels
+            return
 
         try:
             video_start_time = datetime.datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
         except ValueError:
             print(f"Skipping video file with incorrect timestamp format: {video_name}")
-            return clips, labels
+            return
 
         datetime_format = '%Y-%m-%d %H:%M:%S'
         df['Start Date'] = pd.to_datetime(df['Start Date'], format=datetime_format, errors='coerce')
         df['End Date'] = pd.to_datetime(df['End Date'], format=datetime_format, errors='coerce')
         df = df.dropna(subset=['Start Date', 'End Date'])
         frame_step = int(fps / target_fps)
+
+        clips = []
+        labels = []
 
         for i in range(0, frame_count, clip_frames * frame_step):
             start_frame = i
@@ -202,35 +185,34 @@ class VideoDataset(Dataset):
                     print(f"Warning: Annotation timestamps outside clip range for {video_name}, clip {i}")
 
             highlight = len(filtered_df) > 0
-            if isinstance(video_file, str):
-                clips.append((video_file, start_frame, end_frame))
-            else:
-                try:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                    frames = []
-                    for _ in range(clip_frames):
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
-                        if cap.get(cv2.CAP_PROP_POS_FRAMES) % frame_step == 0:
-                            frames.append(frame)
-                    if len(frames) < clip_frames:
-                        padding_frames = [np.zeros_like(frames[0]) for _ in range(clip_frames - len(frames))]
-                        frames.extend(padding_frames)
-                    clips.append((frames, start_frame, end_frame))
-                except Exception as e:
-                    print(f"Error: Failed to extract clip from video for {video_name}, clip {i}: {e}")
+            clips.append((video_file, start_frame, end_frame))
             labels.append(int(highlight))
 
-        if isinstance(video_file, str):
-            cap.release()
-        return clips, labels
+            # Write partial dataset to disk and release RAM
+            if len(clips) >= 1000:
+                self._write_partial_dataset(clips, labels)
+                clips, labels = [], []
+
+        if clips:
+            self._write_partial_dataset(clips, labels)
+
+    def _write_partial_dataset(self, clips, labels):
+        self.partial_dataset_count += 1
+        partial_dataset_path = os.path.join(tempfile.tempdir, f"partial_dataset_{self.partial_dataset_count}.pt")
+        torch.save((clips, labels), partial_dataset_path)
+        print(f"Saved partial dataset to {partial_dataset_path}")
+        clips.clear()
+        labels.clear()
+        torch.cuda.empty_cache()
 
     def __len__(self):
-        return len(self.clips)
+        return self.partial_dataset_count
 
     def __getitem__(self, idx):
-        video_path, start_frame, end_frame = self.clips[idx]
+        partial_dataset_path = os.path.join(tempfile.tempdir, f"partial_dataset_{idx + 1}.pt")
+        clips, labels = torch.load(partial_dataset_path)
+        # Assuming the first clip in the list for simplicity
+        video_path, start_frame, end_frame = clips[0]
         cap = cv2.VideoCapture(video_path)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         frames = []
@@ -245,7 +227,7 @@ class VideoDataset(Dataset):
             frames.append(frame)
         cap.release()
         frames = torch.stack(frames)
-        label = self.labels[idx]
+        label = labels[0]
         return frames, label
 
 class HighlightDetectionModel(nn.Module):
@@ -253,14 +235,30 @@ class HighlightDetectionModel(nn.Module):
         super(HighlightDetectionModel, self).__init__()
         self.resnet = resnet50(pretrained=True)
         self.resnet.fc = nn.Identity()
+        
+        # Determine the device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Move the model to the device
+        self.resnet = self.resnet.to(self.device)
+        
         with torch.no_grad():
-            dummy_input = torch.rand(1, 3, 224, 224)
+            # Move the dummy input to the same device as the model
+            dummy_input = torch.rand(1, 3, 224, 224).to(self.device)
             resnet_output = self.resnet(dummy_input)
             resnet_output_size = resnet_output.size(1)
+        
         self.lstm = nn.LSTM(resnet_output_size, hidden_dim, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, 1)
+        
+        # Move LSTM and fc to the device
+        self.lstm = self.lstm.to(self.device)
+        self.fc = self.fc.to(self.device)
 
     def forward(self, x):
+        # Ensure input is on the same device as the model
+        x = x.to(self.device)
+        
         batch_size, timesteps, C, H, W = x.size()
         x = x.view(batch_size * timesteps, C, H, W)
         x = self.resnet(x)
@@ -302,7 +300,9 @@ def train(video_dir, csv_dir):
     kfold = KFold(n_splits=k, shuffle=True)
     models = []
 
-    for fold, (train_indices, val_indices) in enumerate(kfold.split(dataset)):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    for fold, (train_indices, val_indices) in enumerate(kfold.split(range(len(dataset)))):
         print(f'Fold {fold+1}')
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         val_dataset = torch.utils.data.Subset(dataset, val_indices)
@@ -320,7 +320,6 @@ def train(video_dir, csv_dir):
             hidden_dim=config['training']['hidden_dim'],
             num_layers=config['training']['num_layers']
         )
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
         criterion = nn.BCELoss()
         optimizer = Adam(model.parameters(), lr=config['training']['learning_rate'])
@@ -346,7 +345,8 @@ def train(video_dir, csv_dir):
                 nn.utils.clip_grad_norm_(model.parameters(), config['training']['gradient_clip'])
                 optimizer.step()
                 train_loss += loss.item()
-                print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}')
+                if batch_idx % 10 == 0:
+                    print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}')
 
                 # Log metrics by batch
                 wandb.log({
@@ -372,7 +372,8 @@ def train(video_dir, csv_dir):
                     predicted = (outputs >= 0.5).float()
                     val_correct += (predicted == labels).sum().item()
                     val_total += labels.size(0)
-                    print(f'Validation Batch {batch_idx+1}/{len(val_dataloader)}, Loss: {loss.item()}')
+                    if batch_idx % 10 == 0:
+                        print(f'Validation Batch {batch_idx+1}/{len(val_dataloader)}, Loss: {loss.item()}')
 
                     # Log validation metrics by batch
                     wandb.log({
