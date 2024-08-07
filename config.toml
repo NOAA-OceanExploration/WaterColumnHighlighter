@@ -1,13 +1,32 @@
 [paths]
-model_save_path = "/Users/patrickcooper/Documents/WaterColumnHighlighter/models"
+model_save_path = "/home/arpg/code/WaterColumnHighlighter/models"
+dataset_cache_dir = "/home/arpg/code/WaterColumnHighlighter/models"
 
 [training]
+window_size = 21
+stride = 1
 batch_size = 4
 num_epochs = 10
 learning_rate = 0.001
-clip_length = 10
 hidden_dim = 256
 num_layers = 2
 k_folds = 5
 early_stopping_patience = 10
 gradient_clip = 1.0
+scheduler_factor = 0.5
+scheduler_patience = 5
+
+[data]
+frame_rate = 29
+
+[augmentation]
+random_crop_size = 200
+color_jitter_brightness = 0.1
+color_jitter_contrast = 0.1
+color_jitter_saturation = 0.1
+color_jitter_hue = 0.1
+
+[logging]
+wandb_project = "video_highlight_detection"
+wandb_entity = "patrickallencooper"
+log_interval = 10
