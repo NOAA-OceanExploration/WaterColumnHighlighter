@@ -1,40 +1,36 @@
 import os
 import pandas as pd
 import torch
-import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 import cv2
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
-from torchvision.transforms import Compose, Resize, Normalize, ToTensor, RandomCrop, RandomHorizontalFlip, ColorJitter
-from torchvision.models import resnet50
-from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from PIL import Image
-import argparse
-import datetime
-from datetime import timedelta
-import toml
-import wandb
-from sklearn.model_selection import KFold
 import pickle
 import tarfile
 import tempfile
 import shutil
+from tqdm import tqdm
+import argparse
+from torchvision.transforms import Compose, Resize, Normalize, ToTensor, RandomCrop, RandomHorizontalFlip, ColorJitter
+import toml
+import wandb
+from sklearn.model_selection import KFold
+import torch.nn as nn
+from torchvision.models import resnet50
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Load configuration
 config = toml.load('../config.toml')
 
-# Initialize wandb
-wandb.init(project=config['logging']['wandb_project'], entity=config['logging']['wandb_entity'], config=config['training'])
-config_wandb = wandb.config
-
 class SlidingWindowVideoDataset(Dataset):
-    def __init__(self, video_dir, csv_dir, window_size, stride, transform=None):
+    def __init__(self, video_dir, csv_dir, window_size, stride, transform=None, cache_dir='./dataset_cache'):
         self.video_dir = video_dir
         self.csv_dir = csv_dir
         self.window_size = window_size
         self.stride = stride
         self.transform = transform
+        self.cache_dir = cache_dir
         self.frame_info = []
         self._load_clips_and_labels()
 
@@ -48,63 +44,72 @@ class SlidingWindowVideoDataset(Dataset):
         return None
 
     def _load_clips_and_labels(self):
-        dataset_cache_path = os.path.join(config['paths']['dataset_cache_dir'], 'dataset_cache.pkl')
-        if os.path.exists(dataset_cache_path):
-            print(f"Loading dataset from cache: {dataset_cache_path}")
-            with open(dataset_cache_path, 'rb') as f:
-                self.frame_info = pickle.load(f)
-        else:
-            print("Constructing dataset from scratch...")
-            for dive_dir in os.listdir(self.video_dir):
-                if dive_dir.startswith("EX"):
-                    video_dive_dir = os.path.join(self.video_dir, dive_dir)
-                    compressed_dir = os.path.join(video_dive_dir, "Compressed")
-                    tar_file = os.path.join(video_dive_dir, "Compressed.tar")
-                    csv_file = self._find_csv_file(dive_dir)
-
-                    if csv_file is None:
-                        print(f"CSV file not found for dive: {dive_dir}")
-                        continue
-
-                    df = pd.read_csv(csv_file)
+        os.makedirs(self.cache_dir, exist_ok=True)
+        
+        for dive_dir in tqdm(os.listdir(self.video_dir), desc="Processing dives"):
+            if dive_dir.startswith("EX"):
+                dive_cache_path = os.path.join(self.cache_dir, f"{dive_dir}_cache.pkl")
+                
+                if os.path.exists(dive_cache_path):
+                    print(f"Loading cached data for dive: {dive_dir}")
+                    with open(dive_cache_path, 'rb') as f:
+                        self.frame_info.extend(pickle.load(f))
+                else:
                     print(f"Processing dive: {dive_dir}")
+                    dive_frame_info = self._process_dive(dive_dir)
+                    
+                    with open(dive_cache_path, 'wb') as f:
+                        pickle.dump(dive_frame_info, f)
+                    
+                    self.frame_info.extend(dive_frame_info)
+                
+                print(f"Total frames processed: {len(self.frame_info)}")
 
-                    if os.path.exists(compressed_dir):
-                        for video_name in os.listdir(compressed_dir):
-                            if video_name.endswith('.mp4'):
-                                video_path = os.path.join(compressed_dir, video_name)
-                                self._process_video(video_path, df)
-                    elif os.path.exists(tar_file):
-                        with tarfile.open(tar_file, 'r') as tar:
-                            for member in tar.getmembers():
-                                if member.name.endswith('.mp4'):
-                                    video_file = tar.extractfile(member)
-                                    temp_dir = tempfile.mkdtemp()
-                                    temp_video_path = os.path.join(temp_dir, 'temp_video.mp4')
-                                    with open(temp_video_path, 'wb') as f:
-                                        f.write(video_file.read())
-                                    self._process_video(temp_video_path, df)
-                                    shutil.rmtree(temp_dir)
-                    else:
-                        print(f"Neither Compressed directory nor Compressed.tar file found for dive: {dive_dir}")
+    def _process_dive(self, dive_dir):
+        video_dive_dir = os.path.join(self.video_dir, dive_dir)
+        compressed_dir = os.path.join(video_dive_dir, "Compressed")
+        tar_file = os.path.join(video_dive_dir, "Compressed.tar")
+        csv_file = self._find_csv_file(dive_dir)
 
-            print(f"Saving dataset to cache: {dataset_cache_path}")
-            os.makedirs(os.path.dirname(dataset_cache_path), exist_ok=True)
-            with open(dataset_cache_path, 'wb') as f:
-                pickle.dump(self.frame_info, f)
+        if csv_file is None:
+            print(f"CSV file not found for dive: {dive_dir}")
+            return []
 
-    def _process_video(self, video_file, df):
-        video_name = os.path.basename(video_file)
-        video_timestamp = video_name.split('_')[2] if len(video_name.split('_')) > 2 else None
+        df = pd.read_csv(csv_file)
+        dive_frame_info = []
+
+        if os.path.exists(compressed_dir):
+            for video_name in tqdm(os.listdir(compressed_dir), desc=f"Processing videos in {dive_dir}"):
+                if video_name.endswith('.mp4'):
+                    video_path = os.path.join(compressed_dir, video_name)
+                    dive_frame_info.extend(self._process_video(video_path, df, video_name))
+        elif os.path.exists(tar_file):
+            with tarfile.open(tar_file, 'r') as tar:
+                for member in tqdm(tar.getmembers(), desc=f"Processing videos in {dive_dir} tar"):
+                    if member.name.endswith('.mp4'):
+                        video_file = tar.extractfile(member)
+                        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_video:
+                            temp_video.write(video_file.read())
+                            temp_video_path = temp_video.name
+                        dive_frame_info.extend(self._process_video(temp_video_path, df, os.path.basename(member.name)))
+                        os.unlink(temp_video_path)
+        else:
+            print(f"Neither Compressed directory nor Compressed.tar file found for dive: {dive_dir}")
+
+        return dive_frame_info
+
+    def _process_video(self, video_file, df, original_video_name):
+        video_frame_info = []
+        video_timestamp = original_video_name.split('_')[2] if len(original_video_name.split('_')) > 2 else None
         if not video_timestamp:
-            print(f"Skipping video file with unexpected naming format: {video_name}")
-            return
+            print(f"Skipping video file with unexpected naming format: {original_video_name}")
+            return video_frame_info
 
         try:
-            video_start_time = datetime.datetime.strptime(video_timestamp, '%Y%m%dT%H%M%SZ')
+            video_start_time = pd.to_datetime(video_timestamp, format='%Y%m%dT%H%M%SZ')
         except ValueError:
-            print(f"Skipping video file with incorrect timestamp format: {video_name}")
-            return
+            print(f"Skipping video file with incorrect timestamp format: {original_video_name}")
+            return video_frame_info
 
         cap = cv2.VideoCapture(video_file)
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -118,15 +123,18 @@ class SlidingWindowVideoDataset(Dataset):
         frame_step = int(fps / target_fps)
 
         for frame_num in range(0, frame_count, frame_step):
-            frame_time = video_start_time + timedelta(seconds=frame_num / fps)
+            frame_time = video_start_time + pd.Timedelta(seconds=frame_num / fps)
             filtered_df = df[(df['Start Date'] <= frame_time) & (df['End Date'] >= frame_time)]
             filtered_df = filtered_df[filtered_df['Taxon Path'].str.contains('Biology / Organism')]
             highlight = len(filtered_df) > 0
-            self.frame_info.append((video_file, frame_num, int(highlight)))
+            video_frame_info.append((original_video_name, frame_num, int(highlight)))
+
+        cap.release()
+        return video_frame_info
 
     def __len__(self):
         return len(self.frame_info)
-
+    
     def __getitem__(self, idx):
         center_frame_info = self.frame_info[idx]
         video_file, center_frame_num, label = center_frame_info
@@ -148,10 +156,13 @@ class SlidingWindowVideoDataset(Dataset):
                 frame = np.zeros((224, 224, 3), dtype=np.uint8)
             else:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = Image.fromarray(frame)
-                if self.transform:
-                    frame = self.transform(frame)
-
+            
+            # Convert numpy array to PIL Image
+            frame = Image.fromarray(frame)
+            
+            if self.transform:
+                frame = self.transform(frame)
+            
             frame_sequence.append(frame)
 
         # Zero-pad if necessary
@@ -163,7 +174,7 @@ class SlidingWindowVideoDataset(Dataset):
                 frame_sequence = frame_sequence + padding
 
         frame_sequence = torch.stack(frame_sequence)
-        return frame_sequence, label
+        return frame_sequence, torch.tensor(label, dtype=torch.float32)
 
 class BidirectionalLSTMModel(nn.Module):
     def __init__(self, hidden_dim, num_layers):
@@ -217,7 +228,8 @@ def train(video_dir, csv_dir):
         csv_dir=csv_dir,
         window_size=config['training']['window_size'],
         stride=config['training']['stride'],
-        transform=transform
+        transform=transform,
+        cache_dir=config['paths']['dataset_cache_dir']
     )
     print(f"Dataset created with {len(dataset)} frames")
 
@@ -408,20 +420,25 @@ if __name__ == '__main__':
             os.remove(dataset_cache_path)
             print("Removed existing dataset cache. Rebuilding...")
 
+    # Initialize wandb
+    wandb.init(project=config['logging']['wandb_project'], entity=config['logging']['wandb_entity'], config=config['training'])
+
     if args.mode == 'train':
         models, dataset = train(video_dir, csv_dir)
         test(models, dataset, mode='train')
     elif args.mode == 'test':
+        transform = Compose([
+            Resize((224, 224)),
+            ToTensor(),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
         dataset = SlidingWindowVideoDataset(
             video_dir=video_dir,
             csv_dir=csv_dir,
             window_size=config['training']['window_size'],
             stride=config['training']['stride'],
-            transform=Compose([
-                Resize((224, 224)),
-                ToTensor(),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
+            transform=transform,
+            cache_dir=config['paths']['dataset_cache_dir']
         )
         model_paths = args.model_paths
         models = []

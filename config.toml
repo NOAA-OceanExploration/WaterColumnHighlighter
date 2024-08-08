@@ -5,8 +5,8 @@ dataset_cache_dir = "/home/arpg/code/WaterColumnHighlighter/models"
 [training]
 window_size = 21
 stride = 1
-batch_size = 4
-num_epochs = 10
+batch_size = 128
+num_epochs = 1
 learning_rate = 0.001
 hidden_dim = 256
 num_layers = 2
