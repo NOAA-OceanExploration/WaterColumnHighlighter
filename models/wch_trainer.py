@@ -269,6 +269,11 @@ def train(video_dir, csv_dir):
         early_stopping_patience = config['training']['early_stopping_patience']
         early_stopping_counter = 0
 
+        # Create checkpoint directory
+        checkpoint_dir = os.path.join(config['paths']['checkpoint_dir'], f'fold_{fold+1}')
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        global_step = 0
         for epoch in range(config['training']['num_epochs']):
             print(f'Epoch {epoch+1}/{config["training"]["num_epochs"]}')
             model.train()
@@ -283,6 +288,21 @@ def train(video_dir, csv_dir):
                 nn.utils.clip_grad_norm_(model.parameters(), config['training']['gradient_clip'])
                 optimizer.step()
                 train_loss += loss.item()
+                
+                global_step += 1
+                
+                # Checkpointing
+                if global_step % config['training']['checkpoint_steps'] == 0:
+                    checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_step_{global_step}.pth')
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss,
+                        'global_step': global_step
+                    }, checkpoint_path)
+                    print(f'Checkpoint saved at step {global_step}: {checkpoint_path}')
+                
                 if batch_idx % config['logging']['log_interval'] == 0:
                     print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}')
 
@@ -290,7 +310,8 @@ def train(video_dir, csv_dir):
                     "fold": fold + 1,
                     "epoch": epoch + 1,
                     "batch": batch_idx + 1,
-                    "train_loss": loss.item()
+                    "train_loss": loss.item(),
+                    "global_step": global_step
                 })
 
             train_loss /= len(train_dataloader)
@@ -316,7 +337,8 @@ def train(video_dir, csv_dir):
                         "fold": fold + 1,
                         "epoch": epoch + 1,
                         "batch": batch_idx + 1,
-                        "val_loss": loss.item()
+                        "val_loss": loss.item(),
+                        "global_step": global_step
                     })
 
             val_loss /= len(val_dataloader)
@@ -330,7 +352,8 @@ def train(video_dir, csv_dir):
                 "train_loss_avg": train_loss,
                 "val_loss_avg": val_loss,
                 "val_accuracy": val_accuracy,
-                "learning_rate": optimizer.param_groups[0]['lr']
+                "learning_rate": optimizer.param_groups[0]['lr'],
+                "global_step": global_step
             })
 
             scheduler.step(val_accuracy)

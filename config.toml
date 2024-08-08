@@ -1,11 +1,12 @@
 [paths]
 model_save_path = "/home/arpg/code/WaterColumnHighlighter/models"
 dataset_cache_dir = "/home/arpg/code/WaterColumnHighlighter/models"
+checkpoint_dir = "./checkpoints"
 
 [training]
 window_size = 21
 stride = 1
-batch_size = 128
+batch_size = 8
 num_epochs = 1
 learning_rate = 0.001
 hidden_dim = 256
@@ -15,6 +16,7 @@ early_stopping_patience = 10
 gradient_clip = 1.0
 scheduler_factor = 0.5
 scheduler_patience = 5
+checkpoint_steps = 10000
 
 [data]
 frame_rate = 29
