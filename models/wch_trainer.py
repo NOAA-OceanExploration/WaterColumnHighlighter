@@ -23,6 +23,69 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Load configuration
 config = toml.load('../config.toml')
 
+
+# Helpers
+
+def process_chunk(dataset, start, end, pbar, counter, lock):
+    positive_frames = 0
+    negative_frames = 0
+    for i in range(start, end):
+        _, label = dataset[i]
+        if label == 1:
+            positive_frames += 1
+        else:
+            negative_frames += 1
+        with lock:
+            counter.value += 1
+            pbar.update(1)
+    return positive_frames, negative_frames
+
+def calculate_dataset_metrics(dataset):
+    total_frames = len(dataset)
+    positive_frames = 0
+    negative_frames = 0
+
+    # Use a simple loop with tqdm
+    for idx in tqdm(range(total_frames), desc="Calculating dataset metrics"):
+        _, label = dataset[idx]
+        if label == 1:
+            positive_frames += 1
+        else:
+            negative_frames += 1
+
+        # Optional: Update every 1000 iterations to reduce overhead
+        if idx % 1000 == 0:
+            tqdm.write(f"Processed {idx}/{total_frames} frames")
+
+    positive_percentage = (positive_frames / total_frames) * 100
+    negative_percentage = (negative_frames / total_frames) * 100
+
+    metrics = {
+        "Total Frames": total_frames,
+        "Positive Frames (with organism)": positive_frames,
+        "Negative Frames (without organism)": negative_frames,
+        "Positive Percentage": positive_percentage,
+        "Negative Percentage": negative_percentage
+    }
+
+    return metrics
+
+
+def print_dataset_metrics(metrics):
+    print("\nDataset Metrics:")
+    print(f"Total Frames: {metrics['Total Frames']}")
+    print(f"Positive Frames (with organism): {metrics['Positive Frames (with organism)']} ({metrics['Positive Percentage']:.2f}%)")
+    print(f"Negative Frames (without organism): {metrics['Negative Frames (without organism)']} ({metrics['Negative Percentage']:.2f}%)")
+
+    # Write metrics to a file
+    with open("dataset_metrics.txt", "w") as f:
+        f.write("Dataset Metrics:\n")
+        for key, value in metrics.items():
+            if isinstance(value, float):
+                f.write(f"{key}: {value:.2f}\n")
+            else:
+                f.write(f"{key}: {value}\n")
+
 class SlidingWindowVideoDataset(Dataset):
     def __init__(self, video_dir, csv_dir, window_size, stride, transform=None, cache_dir='./dataset_cache'):
         self.video_dir = video_dir
@@ -232,6 +295,13 @@ def train(video_dir, csv_dir):
         cache_dir=config['paths']['dataset_cache_dir']
     )
     print(f"Dataset created with {len(dataset)} frames")
+
+    # Calculate and print dataset metrics
+    metrics = calculate_dataset_metrics(dataset)
+    print_dataset_metrics(metrics)
+
+    # Log metrics to wandb
+    wandb.log(metrics)
 
     k = config['training']['k_folds']
     kfold = KFold(n_splits=k, shuffle=True)
@@ -463,6 +533,11 @@ if __name__ == '__main__':
             transform=transform,
             cache_dir=config['paths']['dataset_cache_dir']
         )
+        # Calculate and print dataset metrics for test mode as well
+        metrics = calculate_dataset_metrics(dataset)
+        print_dataset_metrics(metrics)
+        wandb.log(metrics)
+
         model_paths = args.model_paths
         models = []
         for path in model_paths:
