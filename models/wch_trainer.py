@@ -185,7 +185,8 @@ class SlidingWindowVideoDataset(Dataset):
         for frame_num in range(0, frame_count, frame_step):
             frame_time = video_start_time + pd.Timedelta(seconds=frame_num / fps)
             filtered_df = df[(df['Start Date'] <= frame_time) & (df['End Date'] >= frame_time)]
-            filtered_df = filtered_df[filtered_df['Taxon Path'].str.contains('Biology / Organism')]
+            #filtered_df = filtered_df[filtered_df['Taxon Path'].str.contains('Biology / Organism')]
+            highlight = any(filtered_df['Taxon Path'].str.strip().astype(bool))
             highlight = len(filtered_df) > 0
             video_frame_info.append((original_video_name, frame_num, int(highlight)))
 
