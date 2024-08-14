@@ -1,4 +1,5 @@
 import os
+import random
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -9,6 +10,7 @@ import pickle
 import tarfile
 import tempfile
 import shutil
+from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 import argparse
 from torchvision.transforms import Compose, Resize, Normalize, ToTensor, RandomCrop, RandomHorizontalFlip, ColorJitter
@@ -26,50 +28,45 @@ config = toml.load('../config.toml')
 
 # Helpers
 
-def process_chunk(dataset, start, end, pbar, counter, lock):
-    positive_frames = 0
-    negative_frames = 0
-    for i in range(start, end):
-        _, label = dataset[i]
-        if label == 1:
-            positive_frames += 1
-        else:
-            negative_frames += 1
-        with lock:
-            counter.value += 1
-            pbar.update(1)
-    return positive_frames, negative_frames
+def process_chunk(args):
+    chunk, dataset = args
+    labels = np.array([dataset[i][1] for i in chunk])
+    return np.sum(labels == 1), np.sum(labels == 0)
 
 def calculate_dataset_metrics(dataset):
-    total_frames = len(dataset)
-    positive_frames = 0
-    negative_frames = 0
-
-    # Use a simple loop with tqdm
-    for idx in tqdm(range(total_frames), desc="Calculating dataset metrics"):
-        _, label = dataset[idx]
-        if label == 1:
-            positive_frames += 1
-        else:
-            negative_frames += 1
-
-        # Optional: Update every 1000 iterations to reduce overhead
-        if idx % 1000 == 0:
-            tqdm.write(f"Processed {idx}/{total_frames} frames")
-
+    total_frames = int(len(dataset) * 0.01)
+    
+    # Randomly select the frames
+    selected_indices = random.sample(range(len(dataset)), total_frames)
+    
+    # Determine the number of processes to use
+    num_processes = cpu_count()
+    
+    # Split the selected indices into chunks for parallel processing
+    chunk_size = total_frames // num_processes
+    chunks = [selected_indices[i:i + chunk_size] for i in range(0, total_frames, chunk_size)]
+    
+    # Create a pool of worker processes
+    with Pool(num_processes) as pool:
+        # Use tqdm to show progress
+        results = list(tqdm(pool.imap(process_chunk, [(chunk, dataset) for chunk in chunks]), 
+                            total=len(chunks), desc="Calculating dataset metrics"))
+    
+    # Sum up the results
+    positive_frames, negative_frames = np.sum(results, axis=0)
+    
     positive_percentage = (positive_frames / total_frames) * 100
     negative_percentage = (negative_frames / total_frames) * 100
 
     metrics = {
         "Total Frames": total_frames,
-        "Positive Frames (with organism)": positive_frames,
-        "Negative Frames (without organism)": negative_frames,
+        "Positive Frames (with organism)": int(positive_frames),
+        "Negative Frames (without organism)": int(negative_frames),
         "Positive Percentage": positive_percentage,
         "Negative Percentage": negative_percentage
     }
 
     return metrics
-
 
 def print_dataset_metrics(metrics):
     print("\nDataset Metrics:")
