@@ -25,22 +25,20 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Load configuration
 config = toml.load('../config.toml')
 
-
 # Helpers
-
 def process_chunk(args):
     chunk, dataset = args
     labels = np.array([dataset[i][1] for i in chunk])
     return np.sum(labels == 1), np.sum(labels == 0)
 
 def calculate_dataset_metrics(dataset):
-    total_frames = int(len(dataset) * 0.01)
+    total_frames = int(len(dataset) * 0.0001)
     
     # Randomly select the frames
     selected_indices = random.sample(range(len(dataset)), total_frames)
     
     # Determine the number of processes to use
-    num_processes = cpu_count()
+    num_processes = int(cpu_count()-8)
     
     # Split the selected indices into chunks for parallel processing
     chunk_size = total_frames // num_processes
@@ -182,13 +180,23 @@ class SlidingWindowVideoDataset(Dataset):
         target_fps = config['data']['frame_rate']
         frame_step = int(fps / target_fps)
 
+        # First pass: identify frames with any annotations
+        frames_with_annotations = set()
         for frame_num in range(0, frame_count, frame_step):
             frame_time = video_start_time + pd.Timedelta(seconds=frame_num / fps)
             filtered_df = df[(df['Start Date'] <= frame_time) & (df['End Date'] >= frame_time)]
-            #filtered_df = filtered_df[filtered_df['Taxon Path'].str.contains('Biology / Organism')]
-            highlight = any(filtered_df['Taxon Path'].str.strip().astype(bool))
-            highlight = len(filtered_df) > 0
-            video_frame_info.append((original_video_name, frame_num, int(highlight)))
+            if len(filtered_df) > 0:  # If there's any annotation at this time
+                frames_with_annotations.add(frame_num)
+
+        # Second pass: label frames, including 5-second windows
+        window_frames = int(5 * fps)
+        for frame_num in range(0, frame_count, frame_step):
+            highlight = 0
+            for check_frame in range(max(0, frame_num - window_frames), min(frame_count, frame_num + window_frames + 1)):
+                if check_frame in frames_with_annotations:
+                    highlight = 1
+                    break
+            video_frame_info.append((original_video_name, frame_num, highlight))
 
         cap.release()
         return video_frame_info
