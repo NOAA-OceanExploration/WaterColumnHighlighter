@@ -4,12 +4,13 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import cv2
+import csv
 import numpy as np
 from PIL import Image
 import pickle
+from datetime import datetime
 import tarfile
 import tempfile
-import shutil
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 import argparse
@@ -90,6 +91,8 @@ class SlidingWindowVideoDataset(Dataset):
         self.transform = transform
         self.cache_dir = cache_dir
         self.frame_info = []
+        self.total_positive_frames = 0
+        self.total_negative_frames = 0
         self._load_clips_and_labels()
 
     def _find_csv_file(self, dive_dir):
@@ -111,17 +114,36 @@ class SlidingWindowVideoDataset(Dataset):
                 if os.path.exists(dive_cache_path):
                     print(f"Loading cached data for dive: {dive_dir}")
                     with open(dive_cache_path, 'rb') as f:
-                        self.frame_info.extend(pickle.load(f))
+                        dive_frame_info = pickle.load(f)
                 else:
                     print(f"Processing dive: {dive_dir}")
                     dive_frame_info = self._process_dive(dive_dir)
                     
                     with open(dive_cache_path, 'wb') as f:
                         pickle.dump(dive_frame_info, f)
-                    
-                    self.frame_info.extend(dive_frame_info)
                 
-                print(f"Total frames processed: {len(self.frame_info)}")
+                self.frame_info.extend(dive_frame_info)
+                
+                positive_frames = sum(1 for _, _, label in dive_frame_info if label == 1)
+                negative_frames = sum(1 for _, _, label in dive_frame_info if label == 0)
+                self.total_positive_frames += positive_frames
+                self.total_negative_frames += negative_frames
+                
+                print(f"Dive {dive_dir} processed:")
+                print(f"  Positive frames: {positive_frames}")
+                print(f"  Negative frames: {negative_frames}")
+                print(f"  Total frames: {len(dive_frame_info)}")
+                print(f"Cumulative totals:")
+                print(f"  Total positive frames: {self.total_positive_frames}")
+                print(f"  Total negative frames: {self.total_negative_frames}")
+                print(f"  Total frames processed: {len(self.frame_info)}")
+                print("--------------------")
+
+        print("\nDataset construction completed.")
+        print(f"Final totals:")
+        print(f"  Total positive frames: {self.total_positive_frames}")
+        print(f"  Total negative frames: {self.total_negative_frames}")
+        print(f"  Total frames in dataset: {len(self.frame_info)}")
 
     def _process_dive(self, dive_dir):
         video_dive_dir = os.path.join(self.video_dir, dive_dir)
@@ -133,7 +155,50 @@ class SlidingWindowVideoDataset(Dataset):
             print(f"CSV file not found for dive: {dive_dir}")
             return []
 
-        df = pd.read_csv(csv_file)
+        print(f"Processing dive: {dive_dir}")
+        print(f"CSV file: {csv_file}")
+
+        # Read CSV file manually to handle inconsistent number of fields
+        rows = []
+        with open(csv_file, 'r') as f:
+            csv_reader = csv.reader(f)
+            headers = next(csv_reader)  # Read the header row
+            for row_index, row in enumerate(csv_reader, start=2):  # Start from 2 as 1 is header
+                if len(row) != len(headers):
+                    print(f"Warning: Inconsistent number of fields in row {row_index}. Expected {len(headers)}, got {len(row)}.")
+                    # Pad or truncate the row to match header length
+                    row = (row + [''] * len(headers))[:len(headers)]
+                rows.append(row)
+
+        # Create DataFrame from the processed rows
+        df = pd.DataFrame(rows, columns=headers)
+
+        # Data validation
+        if 'Start Date' not in df.columns or 'End Date' not in df.columns:
+            print(f"CSV columns: {df.columns}")
+            raise ValueError("CSV is missing 'Start Date' or 'End Date' column")
+
+        # Custom date parsing function
+        def parse_date(date_string):
+            if pd.isna(date_string) or date_string == 'Start Date':
+                return pd.NaT
+            try:
+                return datetime.strptime(date_string, '%Y%m%dT%H%M%S.%fZ')
+            except ValueError:
+                print(f"Warning: Unable to parse date: {date_string}")
+                return pd.NaT
+
+        # Apply custom date parsing
+        df['Start Date'] = df['Start Date'].apply(parse_date)
+        df['End Date'] = df['End Date'].apply(parse_date)
+
+        # Remove rows with NaT values
+        df = df.dropna(subset=['Start Date', 'End Date'])
+
+        print(f"Total annotations in CSV: {len(df)}")
+        print(f"Sample of parsed dates:")
+        print(df[['Start Date', 'End Date']].head())
+
         dive_frame_info = []
 
         if os.path.exists(compressed_dir):
@@ -169,36 +234,51 @@ class SlidingWindowVideoDataset(Dataset):
             print(f"Skipping video file with incorrect timestamp format: {original_video_name}")
             return video_frame_info
 
+        print(f"Processing video: {video_file}")
+        print(f"Video start time: {video_start_time}")
+
         cap = cv2.VideoCapture(video_file)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_duration = pd.Timedelta(seconds=frame_count / fps)
+        video_end_time = video_start_time + video_duration
 
-        df['Start Date'] = pd.to_datetime(df['Start Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
-        df['End Date'] = pd.to_datetime(df['End Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
-        df = df.dropna(subset=['Start Date', 'End Date'])
+        # Filter annotations relevant to this video
+        video_annotations = df[(df['Start Date'] >= video_start_time) & (df['Start Date'] <= video_end_time)]
+        print(f"Annotations for this video: {len(video_annotations)}")
 
+        # Create a set of frame numbers with annotations
+        annotated_frames = set()
+        for _, row in video_annotations.iterrows():
+            annotation_time = row['Start Date']
+            frame_number = int((annotation_time - video_start_time).total_seconds() * fps)
+            annotated_frames.add(frame_number)
+
+        # Process frames
         target_fps = config['data']['frame_rate']
         frame_step = int(fps / target_fps)
+        window_frames = int(5 * fps)  # 5-second window
 
-        # First pass: identify frames with any annotations
-        frames_with_annotations = set()
-        for frame_num in range(0, frame_count, frame_step):
-            frame_time = video_start_time + pd.Timedelta(seconds=frame_num / fps)
-            filtered_df = df[(df['Start Date'] <= frame_time) & (df['End Date'] >= frame_time)]
-            if len(filtered_df) > 0:  # If there's any annotation at this time
-                frames_with_annotations.add(frame_num)
-
-        # Second pass: label frames, including 5-second windows
-        window_frames = int(5 * fps)
         for frame_num in range(0, frame_count, frame_step):
             highlight = 0
             for check_frame in range(max(0, frame_num - window_frames), min(frame_count, frame_num + window_frames + 1)):
-                if check_frame in frames_with_annotations:
+                if check_frame in annotated_frames:
                     highlight = 1
                     break
             video_frame_info.append((original_video_name, frame_num, highlight))
 
+            if frame_num % 1000 == 0:  # Log every 1000th frame for debugging
+                frame_time = video_start_time + pd.Timedelta(seconds=frame_num / fps)
+                print(f"Frame {frame_num}, Time: {frame_time}, Highlight: {highlight}")
+
         cap.release()
+
+        positive_frames = sum(1 for _, _, label in video_frame_info if label == 1)
+        print(f"Video {original_video_name} processed:")
+        print(f"  Total frames: {len(video_frame_info)}")
+        print(f"  Positive frames: {positive_frames}")
+        print(f"  Negative frames: {len(video_frame_info) - positive_frames}")
+
         return video_frame_info
 
     def __len__(self):
@@ -226,7 +306,6 @@ class SlidingWindowVideoDataset(Dataset):
             else:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Convert numpy array to PIL Image
             frame = Image.fromarray(frame)
             
             if self.transform:
@@ -266,15 +345,15 @@ class BidirectionalLSTMModel(nn.Module):
         self.fc = self.fc.to(self.device)
 
     def forward(self, x):
-        x = x.to(self.device)
-        batch_size, timesteps, C, H, W = x.size()
-        c_in = x.view(batch_size * timesteps, C, H, W)
-        features = self.resnet(c_in)
-        features = features.view(batch_size, timesteps, -1)
-        lstm_out, _ = self.lstm(features)
-        center_frame_output = lstm_out[:, lstm_out.size(1)//2, :]
-        output = self.fc(center_frame_output)
-        return torch.sigmoid(output)
+            x = x.to(self.device)
+            batch_size, timesteps, C, H, W = x.size()
+            c_in = x.view(batch_size * timesteps, C, H, W)
+            features = self.resnet(c_in)
+            features = features.view(batch_size, timesteps, -1)
+            lstm_out, _ = self.lstm(features)
+            center_frame_output = lstm_out[:, lstm_out.size(1)//2, :]
+            output = self.fc(center_frame_output)
+            return torch.sigmoid(output)
 
 def train(video_dir, csv_dir):
     print("Starting training")
@@ -303,11 +382,11 @@ def train(video_dir, csv_dir):
     print(f"Dataset created with {len(dataset)} frames")
 
     # Calculate and print dataset metrics
-    metrics = calculate_dataset_metrics(dataset)
-    print_dataset_metrics(metrics)
+    #metrics = calculate_dataset_metrics(dataset)
+    #print_dataset_metrics(metrics)
 
     # Log metrics to wandb
-    wandb.log(metrics)
+    #wandb.log(metrics)
 
     k = config['training']['k_folds']
     kfold = KFold(n_splits=k, shuffle=True)
