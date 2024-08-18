@@ -26,6 +26,24 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Load configuration
 config = toml.load('../config.toml')
 
+def save_checkpoint(model, optimizer, epoch, loss, global_step, checkpoint_dir):
+    # Create checkpoint directory if it doesn't exist
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_step_{global_step}.pth')
+    
+    try:
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': loss,
+            'global_step': global_step
+        }, checkpoint_path)
+        print(f'Checkpoint saved at step {global_step}: {checkpoint_path}')
+    except Exception as e:
+        print(f"Error saving checkpoint: {e}")
+
 # Helpers
 def process_chunk(args):
     chunk, dataset = args
@@ -448,15 +466,7 @@ def train(video_dir, csv_dir):
                 
                 # Checkpointing
                 if global_step % config['training']['checkpoint_steps'] == 0:
-                    checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_step_{global_step}.pth')
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': loss,
-                        'global_step': global_step
-                    }, checkpoint_path)
-                    print(f'Checkpoint saved at step {global_step}: {checkpoint_path}')
+                    save_checkpoint(model, optimizer, epoch, loss.item(), global_step, checkpoint_dir)
                 
                 if batch_idx % config['logging']['log_interval'] == 0:
                     print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}')
@@ -599,7 +609,7 @@ if __name__ == '__main__':
             print("Removed existing dataset cache. Rebuilding...")
 
     # Initialize wandb
-    wandb.init(project=config['logging']['wandb_project'], entity=config['logging']['wandb_entity'], config=config['training'])
+    wandb.init(project='critter_detector')
 
     if args.mode == 'train':
         models, dataset = train(video_dir, csv_dir)
