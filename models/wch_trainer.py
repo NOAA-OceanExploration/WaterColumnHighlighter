@@ -19,12 +19,58 @@ import toml
 import wandb
 from sklearn.model_selection import KFold
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision.models import resnet50
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+import math
+from torch.optim.lr_scheduler import LambdaLR
+
 # Load configuration
 config = toml.load('../config.toml')
+
+def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5, last_epoch=-1):
+    """
+    Create a schedule with a learning rate that decreases following the values of the cosine function between
+    the initial lr set in the optimizer to 0, after a warmup period during which it increases linearly between 0 and the initial lr set in the optimizer.
+    
+    Args:
+        optimizer: The optimizer for which to schedule the learning rate.
+        num_warmup_steps: The number of steps for the warmup phase.
+        num_training_steps: The total number of training steps.
+        num_cycles: The number of cycles (half cycles) in the cosine decay.
+        last_epoch: The index of the last epoch when resuming training.
+    
+    Return:
+        `torch.optim.lr_scheduler.LambdaLR` with the appropriate schedule.
+    """
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
+
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-BCE_loss)
+        F_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
+
+        if self.reduction == 'mean':
+            return torch.mean(F_loss)
+        elif self.reduction == 'sum':
+            return torch.sum(F_loss)
+        else:
+            return F_loss
 
 def save_checkpoint(model, optimizer, epoch, loss, global_step, checkpoint_dir):
     # Create checkpoint directory if it doesn't exist
@@ -399,13 +445,6 @@ def train(video_dir, csv_dir):
     )
     print(f"Dataset created with {len(dataset)} frames")
 
-    # Calculate and print dataset metrics
-    #metrics = calculate_dataset_metrics(dataset)
-    #print_dataset_metrics(metrics)
-
-    # Log metrics to wandb
-    #wandb.log(metrics)
-
     k = config['training']['k_folds']
     kfold = KFold(n_splits=k, shuffle=True)
     models = []
@@ -431,10 +470,18 @@ def train(video_dir, csv_dir):
             num_layers=config['training']['num_layers']
         )
         model.to(device)
-        criterion = nn.BCELoss()
+        
+        criterion = FocalLoss(alpha=0.25, gamma=2)
         optimizer = Adam(model.parameters(), lr=config['training']['learning_rate'])
-        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=config['training']['scheduler_factor'], 
-                                      patience=config['training']['scheduler_patience'], verbose=True)
+
+        # Initialize the new scheduler
+        total_steps = config['training']['num_epochs'] * len(train_dataloader)
+        warmup_steps = int(0.1 * total_steps)  # 10% of total steps for warmup
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps
+        )
 
         wandb.watch(model, log='all')
 
@@ -442,7 +489,6 @@ def train(video_dir, csv_dir):
         early_stopping_patience = config['training']['early_stopping_patience']
         early_stopping_counter = 0
 
-        # Create checkpoint directory
         checkpoint_dir = os.path.join(config['paths']['checkpoint_dir'], f'fold_{fold+1}')
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -460,24 +506,25 @@ def train(video_dir, csv_dir):
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), config['training']['gradient_clip'])
                 optimizer.step()
-                train_loss += loss.item()
+                scheduler.step()  # Step the scheduler every batch
                 
+                train_loss += loss.item()
                 global_step += 1
                 
-                # Checkpointing
                 if global_step % config['training']['checkpoint_steps'] == 0:
                     save_checkpoint(model, optimizer, epoch, loss.item(), global_step, checkpoint_dir)
                 
                 if batch_idx % config['logging']['log_interval'] == 0:
-                    print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}')
-
-                wandb.log({
-                    "fold": fold + 1,
-                    "epoch": epoch + 1,
-                    "batch": batch_idx + 1,
-                    "train_loss": loss.item(),
-                    "global_step": global_step
-                })
+                    current_lr = optimizer.param_groups[0]['lr']
+                    print(f'Batch {batch_idx+1}/{len(train_dataloader)}, Loss: {loss.item()}, LR: {current_lr}')
+                    wandb.log({
+                        "fold": fold + 1,
+                        "epoch": epoch + 1,
+                        "batch": batch_idx + 1,
+                        "train_loss": loss.item(),
+                        "learning_rate": current_lr,
+                        "global_step": global_step
+                    })
 
             train_loss /= len(train_dataloader)
 
@@ -520,8 +567,6 @@ def train(video_dir, csv_dir):
                 "learning_rate": optimizer.param_groups[0]['lr'],
                 "global_step": global_step
             })
-
-            scheduler.step(val_accuracy)
 
             if val_accuracy > best_val_accuracy:
                 best_val_accuracy = val_accuracy
