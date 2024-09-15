@@ -2,24 +2,27 @@
 model_save_path = "/home/arpg/code/WaterColumnHighlighter/models"
 dataset_cache_dir = "/home/arpg/code/WaterColumnHighlighter/models"
 checkpoint_dir = "./checkpoints"
+video_dir = "/path/to/videos"      # Add the path to your video directory
+csv_dir = "/path/to/csvs"          # Add the path to your CSV annotations
 
 [training]
-window_size = 21
+window_size = 21        # Number of frames in each input sequence for LSTM model
 stride = 1
 batch_size = 8
 num_epochs = 1
 learning_rate = 0.001
-hidden_dim = 256
-num_layers = 2
+hidden_dim = 256        # Hidden dimension size for LSTM
+num_layers = 2          # Number of layers for LSTM
 k_folds = 5
 early_stopping_patience = 10
 gradient_clip = 1.0
+checkpoint_steps = 10000
+# Scheduler parameters (if using a scheduler that requires them)
 scheduler_factor = 0.5
 scheduler_patience = 5
-checkpoint_steps = 10000
 
 [data]
-frame_rate = 29
+frame_rate = 29         # Frames per second to sample from videos
 
 [augmentation]
 random_crop_size = 200
@@ -29,6 +32,11 @@ color_jitter_saturation = 0.1
 color_jitter_hue = 0.1
 
 [logging]
-wandb_project = "video_highlight_detection"
+wandb_project = "critter_detector"
 wandb_entity = "patrickallencooper"
 log_interval = 10
+
+[model]
+model_type = "lstm"        # Options: "lstm" or "detr"
+feature_extractor = "resnet"  # Options for LSTM model: "resnet" or "detr"
+fine_tune = false          # Whether to fine-tune the feature extractor or DETR model
