@@ -14,7 +14,7 @@ CritterDetector is an advanced deep learning framework designed to automate the 
 
 ## Installation
 
-Before running WaterColumnHighlighter, ensure you have the following prerequisites installed:
+Before running CritterDetector, ensure you have the following prerequisites installed:
 
 - Python 3.6 or higher
 - PyTorch
@@ -102,7 +102,7 @@ After the training is complete, the final model is saved to the specified direct
 
 ## Contributing
 
-Contributions to WaterColumnHighlighter are welcome! If you have suggestions for improvements or encounter any issues, please open an issue or submit a pull request.
+Contributions to CritterDetector are welcome! If you have suggestions for improvements or encounter any issues, please open an issue or submit a pull request.
 
 ## License
 MIT
