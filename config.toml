@@ -20,6 +20,8 @@ checkpoint_steps = 10000
 # Scheduler parameters (if using a scheduler that requires them)
 scheduler_factor = 0.5
 scheduler_patience = 5
+optimizer = "Adam"  # Options: "Adam", "SGD", etc.
+loss_function = "FocalLoss"  # Options: "FocalLoss", "CrossEntropy", etc.
 
 [data]
 frame_rate = 29         # Frames per second to sample from videos
@@ -40,3 +42,5 @@ log_interval = 10
 model_type = "lstm"        # Options: "lstm" or "detr"
 feature_extractor = "resnet"  # Options for LSTM model: "resnet" or "detr"
 fine_tune = false          # Whether to fine-tune the feature extractor or DETR model
+hidden_dim = 256  # Hidden dimension size for LSTM
+num_layers = 2    # Number of layers for LSTM

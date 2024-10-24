@@ -670,6 +670,10 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
         criterion = FocalLoss(alpha=0.25, gamma=2)
         optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=config['training']['learning_rate'])
 
+        # Use scheduler parameters from config
+        scheduler_factor = config['training'].get('scheduler_factor', 0.5)
+        scheduler_patience = config['training'].get('scheduler_patience', 5)
+
         # Initialize the new scheduler
         total_steps = config['training']['num_epochs'] * len(train_dataloader)
         warmup_steps = int(0.1 * total_steps)  # 10% of total steps for warmup
@@ -677,6 +681,7 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
             optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
+            num_cycles=scheduler_factor  # Use the scheduler factor from config
         )
 
         wandb.watch(model, log='all')
@@ -943,3 +948,4 @@ if __name__ == '__main__':
         test(models, dataset, model_type=args.model_type, mode='test')
 
     wandb.finish()
+
