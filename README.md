@@ -10,6 +10,7 @@ CritterDetector is an advanced deep learning framework designed to automate the 
 - **DETR Integration by Default:** Utilizes the pretrained DETR model for object detection and feature extraction, capturing complex relationships within images without additional training.
 - **Temporal Dynamics Modeling:** Utilizes BiLSTM networks to capture temporal dependencies across video frames, enhancing the accuracy of highlight detection.
 - **Customizable Training:** Offers extensive configuration options for data augmentation, model parameters, and training settings to adapt to various underwater datasets.
+- **AWS Training Support:** Seamlessly switch between local and AWS EC2 training environments, with data loading from S3 when on AWS.
 - **Model Saving and Checkpointing:** Implements model checkpointing and early stopping to prevent overfitting and enable training resumption.
 
 ## Installation
@@ -23,11 +24,12 @@ Before running CritterDetector, ensure you have the following prerequisites inst
 - NumPy
 - toml
 - wandb (Weights & Biases)
+- boto3 (for AWS S3 integration)
 
 You can install most of the required packages using pip:
 
 ```bash
-pip install torch torchvision opencv-python numpy pandas scikit-learn transformers wandb toml tqdm matplotlib
+pip install torch torchvision opencv-python numpy pandas scikit-learn transformers wandb toml tqdm matplotlib boto3
 ```
 
 Make sure to log in to your Weights & Biases account:
@@ -74,13 +76,19 @@ color_jitter_hue = 0.1
 [logging]
 log_interval = 10
 
+[aws]
+use_aws = false  # Set to true to enable AWS training
+s3_bucket_name = "your-s3-bucket-name"  # Name of the S3 bucket
+s3_data_prefix = "data/"  # Prefix for the data in the S3 bucket
+aws_region = "us-west-2"  # AWS region where your resources are located
 ```
 
-Paths: Update the paths to your video directory, CSV annotations, model save location, and cache directories.
-Data: Set the frame rate for sampling frames from the videos.
-Training: Configure hyperparameters such as batch size, number of epochs, learning rate, model architecture, and training strategies.
-Augmentation: Adjust data augmentation parameters to improve model generalization.
-Logging: Set intervals for logging training progress.
+- **Paths**: Update the paths to your video directory, CSV annotations, model save location, and cache directories.
+- **Data**: Set the frame rate for sampling frames from the videos.
+- **Training**: Configure hyperparameters such as batch size, number of epochs, learning rate, model architecture, and training strategies.
+- **Augmentation**: Adjust data augmentation parameters to improve model generalization.
+- **Logging**: Set intervals for logging training progress.
+- **AWS**: Configure AWS settings to enable training on EC2 with data from S3.
 
 ## Usage
 
@@ -90,7 +98,7 @@ To start training the model with your dataset, simply run the script:
 python critter_detector.py --video_dir /path/to/videos --csv_dir /path/to/csvs --mode train
 ```
 
-Note: The model uses the pretrained DETR model by default for feature extraction, without additional training.
+If you want to train on AWS, ensure `use_aws` is set to `true` in the `config.toml` and provide the necessary S3 bucket details.
 
 ## Model Checkpointing
 
