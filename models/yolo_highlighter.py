@@ -38,6 +38,7 @@ class YOLOHighlighter:
         for video_name in os.listdir(self.video_dir):
             if video_name.endswith('.mp4'):
                 video_path = os.path.join(self.video_dir, video_name)
+                print(f"Processing video: {video_name}")  # Verbose output
                 self.process_video(video_path, video_name)
 
     def process_video(self, video_path, video_name):
@@ -56,6 +57,10 @@ class YOLOHighlighter:
 
             # Run YOLO inference
             detections = self.run_yolo_inference(pil_frame)
+
+            # Verbose output for detections
+            if detections:
+                print(f"Frame {frame_num}: Detected {len(detections.class_id)} objects")
 
             # Check if any ocean organisms are detected
             if any(detections.class_id == self.class_names):
