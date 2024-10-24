@@ -38,6 +38,9 @@ from torch.optim.lr_scheduler import LambdaLR
 # Import DETR modules
 from transformers import DetrImageProcessor, DetrForObjectDetection
 
+import boto3
+from botocore.exceptions import NoCredentialsError
+
 # Load configuration
 config = toml.load('config.toml')
 
@@ -585,7 +588,38 @@ class DETRModel(nn.Module):
         return probs[:, 1].unsqueeze(1)
 
 
+def download_data_from_s3(bucket_name, prefix, local_dir):
+    s3 = boto3.client('s3')
+    try:
+        for obj in s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)['Contents']:
+            s3.download_file(bucket_name, obj['Key'], os.path.join(local_dir, os.path.basename(obj['Key'])))
+    except NoCredentialsError:
+        print("Credentials not available for AWS S3.")
+        return False
+    return True
+
 def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fine_tune=False):
+    # Load configuration
+    use_aws = config['aws'].get('use_aws', False)
+    s3_bucket_name = config['aws'].get('s3_bucket_name', '')
+    s3_data_prefix = config['aws'].get('s3_data_prefix', '')
+    aws_region = config['aws'].get('aws_region', 'us-west-2')
+
+    if use_aws:
+        # Set up AWS S3
+        boto3.setup_default_session(region_name=aws_region)
+        local_data_dir = '/tmp/data'  # Temporary directory for data on EC2
+        os.makedirs(local_data_dir, exist_ok=True)
+
+        # Download data from S3
+        if not download_data_from_s3(s3_bucket_name, s3_data_prefix, local_data_dir):
+            print("Failed to download data from S3.")
+            return
+
+        # Update paths to local data directory
+        video_dir = os.path.join(local_data_dir, 'videos')
+        csv_dir = os.path.join(local_data_dir, 'csvs')
+
     print("Starting training")
     if model_type == 'lstm':
         transform = Compose(
@@ -948,4 +982,7 @@ if __name__ == '__main__':
         test(models, dataset, model_type=args.model_type, mode='test')
 
     wandb.finish()
+
+
+
 
