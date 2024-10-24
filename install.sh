@@ -5,7 +5,7 @@ pip install --prefer-binary torch torchvision
 pip install --prefer-binary opencv-python
 pip install --prefer-binary pandas
 pip install --prefer-binary numpy
-pip install --prefer-binary boto3
+pip install --prefer-binary boto3  # Added for AWS S3 integration
 pip install --prefer-binary scikit-learn
 pip install --prefer-binary toml
 pip install --prefer-binary wandb
