@@ -21,10 +21,9 @@ class YOLOHighlighter:
         self.nms_thr = config.get('nms_thr', 0.5)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Load YOLO model configuration
-        self.cfg = Config.fromfile(
-            "configs/pretrain/yolo_world_v2_l_vlpan_bn_2e-3_100e_4x8gpus_obj365v1_goldg_train_1280ft_lvis_minival.py"
-        )
+        # Construct the relative path using os.path.join
+        config_file_path = os.path.join(os.getcwd(), "YOLO-World", "configs", "pretrain", "yolo_world_v2_l_vlpan_bn_2e-3_100e_4x8gpus_obj365v1_goldg_train_1280ft_lvis_minival.py")
+        self.cfg = Config.fromfile(config_file_path)
         self.cfg.work_dir = "."
         self.cfg.load_from = "pretrained_weights/yolo_world_v2_l_obj365v1_goldg_pretrain_1280ft-9babe3f6.pth"
         self.runner = Runner.from_cfg(self.cfg)
@@ -102,8 +101,10 @@ class YOLOHighlighter:
         return detections
 
 if __name__ == "__main__":
-    # Load configuration from config.toml
-    config = toml.load('config.toml')
+    # Load configuration from config.toml located one level above
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config.toml')
+    print(f"Looking for config file at: {config_path}")
+    config = toml.load(config_path)
 
     # Define the class names for ocean organisms
     ocean_organism_classes = (
@@ -120,7 +121,7 @@ if __name__ == "__main__":
     # Initialize YOLOHighlighter
     highlighter = YOLOHighlighter(
         video_dir=config['paths']['video_dir'],
-        output_dir="/path/to/output",
+        output_dir=".",
         class_names=ocean_organism_classes,
         config={
             'max_num_boxes': config['yolo'].get('max_num_boxes', 100),
