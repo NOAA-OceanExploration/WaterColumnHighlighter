@@ -10,9 +10,12 @@ from mmengine.runner import Runner
 from mmengine.runner.amp import autocast
 import supervision as sv
 import toml
+from colorama import init, Fore, Style
+init()  # Initialize colorama
 
 class YOLOHighlighter:
     def __init__(self, video_dir, output_dir, class_names, config):
+        print(f"{Fore.CYAN}Initializing YOLOHighlighter...{Style.RESET_ALL}")
         self.video_dir = video_dir
         self.output_dir = output_dir
         self.class_names = class_names
@@ -32,20 +35,30 @@ class YOLOHighlighter:
         self.pipeline = Compose(self.cfg.test_dataloader.dataset.pipeline)
         self.runner.pipeline = self.pipeline
         self.runner.model.eval()
+        print(f"{Fore.GREEN}✓ YOLOHighlighter initialized successfully{Style.RESET_ALL}")
 
     def process_videos(self):
-        for video_name in os.listdir(self.video_dir):
+        video_files = [f for f in os.listdir(self.video_dir) if f.endswith('.mp4')]
+        print(f"{Fore.CYAN}Found {len(video_files)} videos to process{Style.RESET_ALL}")
+        
+        for video_name in video_files:
             if video_name.endswith('.mp4'):
                 video_path = os.path.join(self.video_dir, video_name)
-                print(f"Processing video: {video_name}")  # Verbose output
+                print(f"\n{Fore.YELLOW}Processing video: {video_name}{Style.RESET_ALL}")
                 self.process_video(video_path, video_name)
 
     def process_video(self, video_path, video_name):
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        print(f"{Fore.CYAN}Video details:{Style.RESET_ALL}")
+        print(f"  • FPS: {fps}")
+        print(f"  • Total frames: {frame_count}")
+        print(f"  • Duration: {frame_count/fps:.2f} seconds")
 
-        for frame_num in range(0, frame_count, int(fps)):  # Process one frame per second
+        for frame_num in range(0, frame_count, int(fps)):
+            print(f"\r{Fore.CYAN}Processing frame {frame_num}/{frame_count} ({frame_num/frame_count*100:.1f}%){Style.RESET_ALL}", end="")
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             ret, frame = cap.read()
             if not ret:
@@ -57,17 +70,19 @@ class YOLOHighlighter:
             # Run YOLO inference
             detections = self.run_yolo_inference(pil_frame)
 
-            # Verbose output for detections
+            # Update detection printing
             if detections:
-                print(f"Frame {frame_num}: Detected {len(detections.class_id)} objects")
+                print(f"\n{Fore.GREEN}✓ Frame {frame_num}: Detected {len(detections.class_id)} objects{Style.RESET_ALL}")
 
-            # Check if any ocean organisms are detected
+            # Update highlight detection printing
             if any(detections.class_id == self.class_names):
-                print(f"Highlight detected in {video_name} at frame {frame_num}")
+                print(f"\n{Fore.MAGENTA}★ Highlight detected in {video_name} at frame {frame_num} ({frame_num/fps:.1f}s){Style.RESET_ALL}")
 
+        print(f"\n{Fore.GREEN}✓ Completed processing {video_name}{Style.RESET_ALL}")
         cap.release()
 
     def run_yolo_inference(self, image):
+        print(f"\r{Fore.CYAN}Running YOLO inference...{Style.RESET_ALL}", end="")
         data_info = self.runner.pipeline(dict(img_id=0, img_path=image, texts=[[t.strip()] for t in self.class_names.split(",")] + [[" "]]))
         data_batch = dict(
             inputs=data_info["inputs"].unsqueeze(0),
@@ -101,6 +116,8 @@ class YOLOHighlighter:
         return detections
 
 if __name__ == "__main__":
+    print(f"{Fore.CYAN}Starting YOLOHighlighter application...{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Loading configuration...{Style.RESET_ALL}")
     # Load configuration from config.toml located one level above
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config.toml')
     print(f"Looking for config file at: {config_path}")
@@ -130,5 +147,8 @@ if __name__ == "__main__":
         }
     )
 
+    print(f"{Fore.YELLOW}Initializing YOLOHighlighter...{Style.RESET_ALL}")
     # Process videos to generate highlights
+    print(f"{Fore.CYAN}Beginning video processing...{Style.RESET_ALL}")
     highlighter.process_videos()
+    print(f"\n{Fore.GREEN}✓ All videos processed successfully!{Style.RESET_ALL}")
