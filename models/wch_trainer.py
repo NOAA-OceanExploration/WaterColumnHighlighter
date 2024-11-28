@@ -29,7 +29,7 @@ import wandb
 from sklearn.model_selection import KFold
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import resnet50
+from torchvision.models import resnet50, ResNet50_Weights
 from torch.optim import Adam
 
 import math
@@ -42,7 +42,7 @@ import boto3
 from botocore.exceptions import NoCredentialsError
 
 # Load configuration
-config = toml.load('config.toml')
+config = toml.load('../config.toml')
 
 
 def get_cosine_schedule_with_warmup(
@@ -277,57 +277,99 @@ class SlidingWindowVideoDataset(Dataset):
         print(f"Processing dive: {dive_dir}")
         print(f"CSV file: {csv_file}")
 
-        # Read CSV file manually to handle inconsistent number of fields
-        rows = []
-        with open(csv_file, 'r') as f:
-            csv_reader = csv.reader(f)
-            headers = next(csv_reader)  # Read the header row
-            for row_index, row in enumerate(csv_reader, start=2):  # Start from 2 as 1 is header
-                if len(row) != len(headers):
-                    print(
-                        f"Warning: Inconsistent number of fields in row {row_index}. Expected {len(headers)}, got {len(row)}."
-                    )
-                    # Pad or truncate the row to match header length
-                    row = (row + [''] * len(headers))[:len(headers)]
-                rows.append(row)
-
-        # Create DataFrame from the processed rows
-        df = pd.DataFrame(rows, columns=headers)
-
-        # Data validation
-        if 'Start Date' not in df.columns or 'End Date' not in df.columns:
-            print(f"CSV columns: {df.columns}")
-            raise ValueError("CSV is missing 'Start Date' or 'End Date' column")
-
-        # Custom date parsing function
-        def parse_date(date_string):
-            if pd.isna(date_string) or date_string == 'Start Date':
-                return pd.NaT
+        # More flexible timestamp parsing
+        def parse_video_timestamp(video_name):
             try:
-                return datetime.strptime(date_string, '%Y%m%dT%H%M%S.%fZ')
-            except ValueError:
-                print(f"Warning: Unable to parse date: {date_string}")
-                return pd.NaT
+                # Split by underscore and look for timestamp part
+                parts = video_name.split('_')
+                for part in parts:
+                    # Look for patterns like YYYYMMDDTHHMMSS or similar
+                    if 'T' in part or any(c.isdigit() for c in part):
+                        # Remove any file extensions
+                        part = part.split('.')[0]
+                        # Remove any trailing Z or timezone info
+                        timestamp = part.split('Z')[0].split('+')[0]
+                        # Try multiple date formats with more variations
+                        formats = [
+                            '%Y%m%dT%H%M%S',
+                            '%Y%m%dT%H%M',
+                            '%Y%m%d',
+                            '%Y%m%d%H%M%S',
+                            '%Y%m%d%H%M',
+                            # Add specific format for your files
+                            '20180617T195500',
+                            '20180617T200000'
+                        ]
+                        
+                        for fmt in formats:
+                            try:
+                                # Try direct parsing
+                                return pd.to_datetime(timestamp, format=fmt)
+                            except ValueError:
+                                try:
+                                    # Try parsing without strict format matching
+                                    return pd.to_datetime(timestamp)
+                                except ValueError:
+                                    continue
+                
+                # If we get here, try one last time with the most flexible parsing
+                for part in parts:
+                    try:
+                        return pd.to_datetime(part)
+                    except ValueError:
+                        continue
+                
+                raise ValueError(f"No valid timestamp found in {video_name}")
+            except Exception as e:
+                print(f"Warning: Could not parse timestamp from {video_name}: {e}")
+                # Instead of returning None, try to extract timestamp using regex
+                import re
+                try:
+                    # Look for patterns like 20180617T195500
+                    match = re.search(r'(\d{8}T\d{6})', video_name)
+                    if match:
+                        timestamp_str = match.group(1)
+                        return pd.to_datetime(timestamp_str, format='%Y%m%dT%H%M%S')
+                except Exception:
+                    pass
+                return None
 
-        # Apply custom date parsing
-        df['Start Date'] = df['Start Date'].apply(parse_date)
-        df['End Date'] = df['End Date'].apply(parse_date)
+        # More tolerant CSV reading
+        def read_csv_tolerant():
+            rows = []
+            max_fields = 0
+            with open(csv_file, 'r') as f:
+                csv_reader = csv.reader(f)
+                headers = next(csv_reader)
+                max_fields = len(headers)
+                
+                for row_index, row in enumerate(csv_reader, start=2):
+                    # If row has fewer fields than headers, pad with empty strings
+                    if len(row) < max_fields:
+                        row.extend([''] * (max_fields - len(row)))
+                    # If row has more fields than headers, truncate
+                    elif len(row) > max_fields:
+                        row = row[:max_fields]
+                    rows.append(row)
+            
+            return pd.DataFrame(rows, columns=headers)
 
-        # Remove rows with NaT values
-        df = df.dropna(subset=['Start Date', 'End Date'])
-
-        print(f"Total annotations in CSV: {len(df)}")
-        print(f"Sample of parsed dates:")
-        print(df[['Start Date', 'End Date']].head())
+        # Use the more tolerant CSV reading
+        df = read_csv_tolerant()
 
         dive_frame_info = []
 
         if os.path.exists(compressed_dir):
             for video_name in tqdm(os.listdir(compressed_dir), desc=f"Processing videos in {dive_dir}"):
                 if video_name.endswith('.mp4'):
+                    video_timestamp = parse_video_timestamp(video_name)
+                    if video_timestamp is None:
+                        print(f"Skipping video with unparseable timestamp: {video_name}")
+                        continue
+                        
                     video_path = os.path.join(compressed_dir, video_name)
                     dive_frame_info.extend(
-                        self._process_video(video_path, df, video_name)
+                        self._process_video(video_path, df, video_name, video_timestamp)
                     )
         elif os.path.exists(tar_file):
             with tarfile.open(tar_file, 'r') as tar:
@@ -335,6 +377,12 @@ class SlidingWindowVideoDataset(Dataset):
                     tar.getmembers(), desc=f"Processing videos in {dive_dir} tar"
                 ):
                     if member.name.endswith('.mp4'):
+                        video_name = os.path.basename(member.name)
+                        video_timestamp = parse_video_timestamp(video_name)
+                        if video_timestamp is None:
+                            print(f"Skipping video with unparseable timestamp: {video_name}")
+                            continue
+
                         video_file = tar.extractfile(member)
                         with tempfile.NamedTemporaryFile(
                             suffix='.mp4', delete=False
@@ -343,7 +391,7 @@ class SlidingWindowVideoDataset(Dataset):
                             temp_video_path = temp_video.name
                         dive_frame_info.extend(
                             self._process_video(
-                                temp_video_path, df, os.path.basename(member.name)
+                                temp_video_path, df, video_name, video_timestamp
                             )
                         )
                         os.unlink(temp_video_path)
@@ -354,37 +402,34 @@ class SlidingWindowVideoDataset(Dataset):
 
         return dive_frame_info
 
-    def _process_video(self, video_file, df, original_video_name):
+    def _process_video(self, video_file, df, original_video_name, video_start_time):
         video_frame_info = []
-        video_timestamp = (
-            original_video_name.split('_')[2]
-            if len(original_video_name.split('_')) > 2
-            else None
-        )
-        if not video_timestamp:
-            print(
-                f"Skipping video file with unexpected naming format: {original_video_name}"
-            )
-            return video_frame_info
-
-        try:
-            video_start_time = pd.to_datetime(video_timestamp, format='%Y%m%dT%H%M%S%Z')
-        except ValueError:
-            print(
-                f"Skipping video file with incorrect timestamp format: {original_video_name}"
-            )
-            return video_frame_info
 
         print(f"Processing video: {video_file}")
         print(f"Video start time: {video_start_time}")
 
+        # Skip rows that contain the column name 'Start Date' itself
+        df = df[df['Start Date'] != 'Start Date']
+        
+        # Convert 'Start Date' column to datetime if it's not already
+        if df['Start Date'].dtype == object:  # If column contains strings
+            # Explicitly parse as UTC, skip any bad values
+            df['Start Date'] = pd.to_datetime(df['Start Date'], utc=True, errors='coerce')
+            # Remove any rows where the date parsing failed
+            df = df.dropna(subset=['Start Date'])
+        
+        # Ensure video_start_time is timezone-aware (UTC)
+        if video_start_time.tzinfo is None:
+            video_start_time = pd.Timestamp(video_start_time, tz='UTC')
+        
         cap = cv2.VideoCapture(video_file)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         video_duration = pd.Timedelta(seconds=frame_count / fps)
+        # Make sure video_end_time is also timezone-aware
         video_end_time = video_start_time + video_duration
 
-        # Filter annotations relevant to this video
+        # Now both timestamps are timezone-aware, comparison will work
         video_annotations = df[
             (df['Start Date'] >= video_start_time) & (df['Start Date'] <= video_end_time)
         ]
@@ -481,6 +526,12 @@ class BidirectionalLSTMModel(nn.Module):
         self.feature_extractor_type = feature_extractor
         self.fine_tune = fine_tune
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+        # Also print CUDA availability and device count if available
+        if torch.cuda.is_available():
+            print(f"CUDA available: {torch.cuda.is_available()}")
+            print(f"CUDA device count: {torch.cuda.device_count()}")
+            print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
 
         if self.feature_extractor_type == 'detr':
             self.processor = DetrImageProcessor.from_pretrained(
@@ -506,7 +557,7 @@ class BidirectionalLSTMModel(nn.Module):
                 hidden_size = last_hidden_state.size(-1)
                 feature_size = hidden_size
         elif self.feature_extractor_type == 'resnet':
-            self.resnet = resnet50(pretrained=True)
+            self.resnet = resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
             self.resnet.fc = nn.Identity()
             self.resnet = self.resnet.to(self.device)
             if not self.fine_tune:
@@ -556,6 +607,12 @@ class DETRModel(nn.Module):
     def __init__(self, num_classes=1, fine_tune=False):
         super(DETRModel, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+        # Also print CUDA availability and device count if available
+        if torch.cuda.is_available():
+            print(f"CUDA available: {torch.cuda.is_available()}")
+            print(f"CUDA device count: {torch.cuda.device_count()}")
+            print(f"CUDA device name: {torch.cuda.get_device_name(0)}")
         self.processor = DetrImageProcessor.from_pretrained(
             "facebook/detr-resnet-50", revision="no_timm"
         )
@@ -624,7 +681,7 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
     if model_type == 'lstm':
         transform = Compose(
             [
-                Resize((224, 224)),
+                Resize((112, 112)),
                 RandomCrop((config['augmentation']['random_crop_size'], config['augmentation']['random_crop_size'])),
                 RandomHorizontalFlip(),
                 ColorJitter(
@@ -898,18 +955,17 @@ def test(models, dataset, model_type='lstm', mode='test'):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Video Highlight Detection Training')
-    parser.add_argument('--video_dir', type=str, required=True, help='Path to the video directory')
-    parser.add_argument('--csv_dir', type=str, required=True, help='Path to the CSV directory')
-    parser.add_argument('--mode', type=str, required=True, choices=['train', 'test'], help='Mode: train or test')
+    parser.add_argument('--mode', type=str, choices=['train', 'test'], default=config['paths']['mode'], help='Mode: train or test')
     parser.add_argument('--model_paths', type=str, nargs='*', help='Paths to the trained models for testing')
     parser.add_argument('--force_dataset_rebuild', action='store_true', help='Force rebuilding of the dataset cache')
-    parser.add_argument('--model_type', type=str, choices=['lstm', 'detr'], default='lstm', help='Type of model to use: lstm or detr')
-    parser.add_argument('--feature_extractor', type=str, choices=['resnet', 'detr'], default='resnet', help='Feature extractor to use with LSTM model')
-    parser.add_argument('--fine_tune', action='store_true', help='Fine-tune the feature extractor or DETR model')
+    parser.add_argument('--model_type', type=str, choices=['lstm', 'detr'], default=config['model']['model_type'], help='Type of model to use: lstm or detr')
+    parser.add_argument('--feature_extractor', type=str, choices=['resnet', 'detr'], default=config['model']['feature_extractor'], help='Feature extractor to use with LSTM model')
+    parser.add_argument('--fine_tune', action='store_true', default=config['model']['fine_tune'], help='Fine-tune the feature extractor or DETR model')
     args = parser.parse_args()
 
-    video_dir = args.video_dir
-    csv_dir = args.csv_dir
+    # Get paths from config instead of arguments
+    video_dir = config['paths']['video_dir']
+    csv_dir = config['paths']['csv_dir']
 
     if args.force_dataset_rebuild:
         dataset_cache_path = os.path.join(config['paths']['dataset_cache_dir'], 'dataset_cache.pkl')
@@ -918,7 +974,7 @@ if __name__ == '__main__':
             print("Removed existing dataset cache. Rebuilding...")
 
     # Initialize wandb
-    wandb.init(project='critter_detector')
+    wandb.init(project=config['logging']['wandb_project'], entity=config['logging']['wandb_entity'])
 
     if args.mode == 'train':
         models, dataset = train(
@@ -982,7 +1038,3 @@ if __name__ == '__main__':
         test(models, dataset, model_type=args.model_type, mode='test')
 
     wandb.finish()
-
-
-
-
