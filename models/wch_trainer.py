@@ -41,6 +41,8 @@ from transformers import DetrImageProcessor, DetrForObjectDetection
 import boto3
 from botocore.exceptions import NoCredentialsError
 
+import gc
+
 # Load configuration
 config = toml.load('../config.toml')
 
@@ -210,6 +212,10 @@ class SlidingWindowVideoDataset(Dataset):
         self.frame_info = []
         self.total_positive_frames = 0
         self.total_negative_frames = 0
+        self.video_cache = {}
+        self.max_cache_size = 5  # Reduced from 10
+        self.current_memory_usage = 0
+        self.max_memory_usage = 8 * 1024 * 1024 * 1024  # 8GB limit
         self._load_clips_and_labels()
 
     def _find_csv_file(self, dive_dir):
@@ -474,6 +480,30 @@ class SlidingWindowVideoDataset(Dataset):
 
         return video_frame_info
 
+    def _get_video_capture(self, video_file):
+        # Clear cache if memory usage exceeds threshold
+        if self.current_memory_usage > self.max_memory_usage:
+            self._clear_video_cache()
+            
+        if video_file not in self.video_cache:
+            # Remove oldest video if cache is full
+            if len(self.video_cache) >= self.max_cache_size:
+                self._clear_video_cache()
+            
+            self.video_cache[video_file] = cv2.VideoCapture(video_file)
+            # Estimate memory usage (rough approximation)
+            self.current_memory_usage += 500 * 1024 * 1024  # Assume 500MB per video
+            
+        return self.video_cache[video_file]
+    
+    def _clear_video_cache(self):
+        for cap in self.video_cache.values():
+            cap.release()
+        self.video_cache.clear()
+        self.current_memory_usage = 0
+        gc.collect()
+        torch.cuda.empty_cache()
+
     def __len__(self):
         return len(self.frame_info)
 
@@ -486,39 +516,47 @@ class SlidingWindowVideoDataset(Dataset):
         end_idx = min(len(self.frame_info), idx + half_window + 1)
 
         frame_sequence = []
-        for i in range(start_idx, end_idx):
-            frame_info = self.frame_info[i]
-            video_file, frame_num, _ = frame_info
-            cap = cv2.VideoCapture(video_file)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-            ret, frame = cap.read()
-            cap.release()
+        current_video = None
+        current_video_file = None
 
-            if not ret:
-                frame = np.zeros((224, 224, 3), dtype=np.uint8)
-            else:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        try:
+            for i in range(start_idx, end_idx):
+                frame_info = self.frame_info[i]
+                video_file, frame_num, _ = frame_info
+                
+                cap = self._get_video_capture(video_file)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
 
-            frame = Image.fromarray(frame)
+                if not ret:
+                    frame = np.zeros((224, 224, 3), dtype=np.uint8)
+                else:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            if self.transform:
-                frame = self.transform(frame)
+                frame = Image.fromarray(frame)
+                if self.transform:
+                    frame = self.transform(frame)
+                frame_sequence.append(frame)
 
-            frame_sequence.append(frame)
+        except Exception as e:
+            print(f"Error loading frame sequence: {e}")
+            # Return a zero tensor of appropriate size in case of error
+            return torch.zeros((self.window_size, 3, 224, 224)), torch.tensor(label, dtype=torch.float32)
 
         # Zero-pad if necessary
         if len(frame_sequence) < self.window_size:
-            padding = [
-                torch.zeros_like(frame_sequence[0])
-                for _ in range(self.window_size - len(frame_sequence))
-            ]
+            padding = [torch.zeros_like(frame_sequence[0]) for _ in range(self.window_size - len(frame_sequence))]
             if idx < half_window:
                 frame_sequence = padding + frame_sequence
             else:
                 frame_sequence = frame_sequence + padding
 
-        frame_sequence = torch.stack(frame_sequence)
-        return frame_sequence, torch.tensor(label, dtype=torch.float32)
+        return torch.stack(frame_sequence), torch.tensor(label, dtype=torch.float32)
+
+    def __del__(self):
+        # Clean up video captures
+        for cap in self.video_cache.values():
+            cap.release()
 
 class BidirectionalLSTMModel(nn.Module):
     def __init__(self, hidden_dim, num_layers, feature_extractor='resnet', fine_tune=False):
@@ -738,15 +776,17 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
             train_dataset,
             batch_size=config['training']['batch_size'],
             shuffle=True,
-            num_workers=20,
-            pin_memory=True
+            num_workers=min(8, cpu_count() - 2),  # Reduced from 20
+            pin_memory=True,
+            persistent_workers=True  # Add persistent workers
         )
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=config['training']['batch_size'],
             shuffle=False,
-            num_workers=20,
-            pin_memory=True
+            num_workers=min(8, cpu_count() - 2),  # Reduced from 20
+            pin_memory=True,
+            persistent_workers=True  # Add persistent workers
         )
 
         print(f"Training dataloader created with {len(train_dataloader)} batches")
@@ -903,6 +943,10 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
         )
         model.load_state_dict(torch.load(best_model_path))
         models.append(model)
+
+        # Force garbage collection after each epoch
+        gc.collect()
+        torch.cuda.empty_cache()  # If using GPU
 
     return models, dataset
 
