@@ -655,7 +655,7 @@ def download_data_from_s3(bucket_name, prefix, local_dir):
         return False
     return True
 
-def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fine_tune=False):
+def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fine_tune=False, subsample_ratio=0.1):
     # Load configuration
     use_aws = config['aws'].get('use_aws', False)
     s3_bucket_name = config['aws'].get('s3_bucket_name', '')
@@ -679,21 +679,20 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
 
     print("Starting training")
     if model_type == 'lstm':
-        transform = Compose(
-            [
-                Resize((112, 112)),
-                RandomCrop((config['augmentation']['random_crop_size'], config['augmentation']['random_crop_size'])),
-                RandomHorizontalFlip(),
-                ColorJitter(
-                    brightness=config['augmentation']['color_jitter_brightness'],
-                    contrast=config['augmentation']['color_jitter_contrast'],
-                    saturation=config['augmentation']['color_jitter_saturation'],
-                    hue=config['augmentation']['color_jitter_hue'],
-                ),
-                ToTensor(),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ]
-        )
+        transform = Compose([
+            # First resize to a larger size that can accommodate the random crop
+            Resize((224, 224)),  # Increased from 112x112
+            RandomCrop((config['augmentation']['random_crop_size'], config['augmentation']['random_crop_size'])),
+            RandomHorizontalFlip(),
+            ColorJitter(
+                brightness=config['augmentation']['color_jitter_brightness'],
+                contrast=config['augmentation']['color_jitter_contrast'],
+                saturation=config['augmentation']['color_jitter_saturation'],
+                hue=config['augmentation']['color_jitter_hue'],
+            ),
+            ToTensor(),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
     elif model_type == 'detr':
         transform = Compose(
             [
@@ -712,7 +711,14 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
         transform=transform,
         cache_dir=config['paths']['dataset_cache_dir'],
     )
-    print(f"Dataset created with {len(dataset)} frames")
+    print(f"Full dataset size: {len(dataset)} frames")
+    
+    # Subsample the dataset
+    total_samples = len(dataset)
+    subsample_size = int(total_samples * subsample_ratio)
+    indices = torch.randperm(total_samples)[:subsample_size]
+    dataset = torch.utils.data.Subset(dataset, indices)
+    print(f"Subsampled dataset size: {len(dataset)} frames ({subsample_ratio*100}% of total)")
 
     k = config['training']['k_folds']
     kfold = KFold(n_splits=k, shuffle=True)
@@ -732,13 +738,15 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
             train_dataset,
             batch_size=config['training']['batch_size'],
             shuffle=True,
-            num_workers=2,
+            num_workers=20,
+            pin_memory=True
         )
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=config['training']['batch_size'],
             shuffle=False,
-            num_workers=2,
+            num_workers=20,
+            pin_memory=True
         )
 
         print(f"Training dataloader created with {len(train_dataloader)} batches")
@@ -746,8 +754,8 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
 
         if model_type == 'lstm':
             model = BidirectionalLSTMModel(
-                hidden_dim=config['training']['hidden_dim'],
-                num_layers=config['training']['num_layers'],
+                hidden_dim=config['model']['hidden_dim'],
+                num_layers=config['model']['num_layers'],
                 feature_extractor=feature_extractor,
                 fine_tune=fine_tune,
             )
@@ -961,6 +969,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_type', type=str, choices=['lstm', 'detr'], default=config['model']['model_type'], help='Type of model to use: lstm or detr')
     parser.add_argument('--feature_extractor', type=str, choices=['resnet', 'detr'], default=config['model']['feature_extractor'], help='Feature extractor to use with LSTM model')
     parser.add_argument('--fine_tune', action='store_true', default=config['model']['fine_tune'], help='Fine-tune the feature extractor or DETR model')
+    parser.add_argument('--subsample_ratio', type=float, default=0.1, help='Ratio of dataset to use for training (0-1)')
     args = parser.parse_args()
 
     # Get paths from config instead of arguments
@@ -982,7 +991,8 @@ if __name__ == '__main__':
             csv_dir,
             model_type=args.model_type,
             feature_extractor=args.feature_extractor,
-            fine_tune=args.fine_tune
+            fine_tune=args.fine_tune,
+            subsample_ratio=args.subsample_ratio
         )
         test(models, dataset, model_type=args.model_type, mode='train')
     elif args.mode == 'test':
