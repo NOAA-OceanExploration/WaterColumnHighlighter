@@ -213,7 +213,7 @@ class SlidingWindowVideoDataset(Dataset):
         self.total_positive_frames = 0
         self.total_negative_frames = 0
         self.video_cache = {}
-        self.max_cache_size = 5  # Reduced from 10
+        self.max_cache_size = 5
         self.current_memory_usage = 0
         self.max_memory_usage = 8 * 1024 * 1024 * 1024  # 8GB limit
         self._load_clips_and_labels()
