@@ -80,10 +80,19 @@ class OWLHighlighter:
                 frame_path = os.path.join(video_output_dir, frame_filename)
                 cv2.imwrite(frame_path, frame)
                 
-                # Store detection information for timeline
-                frame_detections.append((frame_num, timestamp, detections))
+                # Store detection information AND the PIL frame for timeline
+                frame_detections.append((frame_num, timestamp, detections, pil_frame))
                 
                 print(f"\n{Fore.MAGENTA}★ Highlight detected and saved in {video_name} at frame {frame_num} ({timestamp:.1f}s){Style.RESET_ALL}")
+
+        # Display cropped images for sanity check
+        for frame_num, timestamp, detections, saved_frame in frame_detections:
+            for detection in detections:
+                box = detection["box"]
+                label = detection["label"]
+                # Crop the detected object from the correct frame
+                cropped_image = saved_frame.crop((box[0], box[1], box[2], box[3]))
+                cropped_image.show(title=f"{label} at {timestamp:.1f}s")
 
         # Generate timeline visualization after processing all frames
         if frame_detections:
@@ -111,27 +120,30 @@ class OWLHighlighter:
             threshold=self.threshold
         )[0]
 
-        # Return detected labels instead of just boolean
-        detected_labels = []
-        for score, label in zip(results["scores"], results["labels"]):
+        # Return detected labels and bounding boxes
+        detected_objects = []
+        for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
             if score > self.threshold:
-                detected_labels.append(self.class_names[label])
-        return detected_labels
+                detected_objects.append({
+                    "label": self.class_names[label],
+                    "box": box.cpu().numpy()  # Convert to numpy array for easier handling
+                })
+        return detected_objects
 
     def _create_timeline_visualization(self, video_name, frame_detections, total_frames, fps):
         """Create a visual timeline of detections in the video."""
         # Set dimensions for the timeline visualization
-        width = 2000  # Expanded width for more space
-        height = 500
+        width = 2000
+        height = 1200
         padding = 40
-        timeline_y = height - 100  # Adjusted to leave space for the legend
+        timeline_y = height - 300
         
         # Create a blank image with a light background
         background_color = (245, 245, 250)  # Light blue-gray
         timeline_img = Image.new('RGB', (width, height), background_color)
         draw = ImageDraw.Draw(timeline_img)
         
-        # Expanded taxonomic classification and color scheme
+        # Taxonomic classification and color scheme
         taxonomic_groups = {
             # Chordata (vertebrates)
             'actinopterygii': {  # Ray-finned fishes
@@ -227,37 +239,61 @@ class OWLHighlighter:
         
         # Draw each detection individually unless they are close in time
         previous_frame = None
-        for frame_num, timestamp, detections in sorted(frame_detections):
+        image_y_offset = timeline_y - 400
+        for frame_num, timestamp, detections, saved_frame in sorted(frame_detections):
             x = int(padding + (frame_num * scale))
             
             # Check if this detection is close to the previous one
             if previous_frame is not None and frame_num - previous_frame <= int(fps * 2):
-                # Continue the current group
                 continue
             
             # Draw detection markers and labels
-            y_offset = timeline_y - 100
+            y_offset = image_y_offset
             for detection in detections:
+                detection_label = detection["label"]
+                box = detection["box"]
+                
                 # Determine organism type and color
                 detected_group = 'other'
                 for group, info in taxonomic_groups.items():
-                    if any(pattern in detection.lower() for pattern in info['patterns']):
+                    if any(pattern in detection_label.lower() for pattern in info['patterns']):
                         detected_group = group
                         break
                 color = taxonomic_groups[detected_group]['color']
                 
-                # Draw colored dot
-                dot_radius = 3
-                draw.ellipse([x - dot_radius, y_offset - dot_radius, 
-                             x + dot_radius, y_offset + dot_radius], 
+                # Crop and paste the detected object
+                cropped_image = saved_frame.crop((box[0], box[1], box[2], box[3]))
+                # Resize while maintaining aspect ratio
+                cropped_image.thumbnail((200, 200))
+                
+                # Calculate paste position (centered horizontally on the timeline point)
+                paste_x = x - cropped_image.width // 2
+                paste_y = y_offset
+                
+                # Create a white background for the image
+                bg = Image.new('RGB', cropped_image.size, 'white')
+                timeline_img.paste(bg, (paste_x, paste_y))
+                timeline_img.paste(cropped_image, (paste_x, paste_y))
+                
+                # Draw connecting line from image to timeline
+                draw.line([(x, paste_y + cropped_image.height), (x, timeline_y)], 
+                         fill=color, width=2)
+                
+                # Draw dot on timeline
+                dot_radius = 4
+                draw.ellipse([x - dot_radius, timeline_y - dot_radius, 
+                             x + dot_radius, timeline_y + dot_radius], 
                             fill=color)
                 
-                # Draw label
-                label = detection.replace('a photo of a ', '').capitalize()
-                draw.text((x + 5, y_offset - 7), label, 
-                         fill=color, font=label_font)
+                # Draw label below the image
+                label = detection_label.replace('a photo of a ', '').capitalize()
+                label_width = label_font.getlength(label)
+                draw.text((paste_x + (cropped_image.width - label_width) // 2, 
+                          paste_y + cropped_image.height + 5), 
+                         label, fill=color, font=label_font)
                 
-                y_offset -= 20
+                # Update y_offset for next detection
+                y_offset -= (cropped_image.height + 60)
             
             previous_frame = frame_num
 
