@@ -6,6 +6,7 @@ from transformers import Owlv2Processor, Owlv2ForObjectDetection
 from typing import List, Optional, Dict
 from .models import Detection, VideoProcessingResult
 from .visualization import create_timeline_visualization
+from colorama import Fore, Style
 
 class OWLHighlighter:
     # Define comprehensive ocean classes as a class attribute
@@ -65,11 +66,23 @@ class OWLHighlighter:
     ]
 
     def __init__(self, model_name: str = "google/owlv2-base-patch16-ensemble", 
-                 score_threshold: float = 0.95):
-        self.threshold = score_threshold
+                 score_threshold: float = 0.1):
+        """Initialize the OWL Highlighter.
         
-        # Format class names for OWL model
-        self.formatted_classes = [f"a photo of a {name.strip()}" for name in self.OCEAN_CLASSES]
+        Args:
+            model_name: Name of the OWL model to use
+            score_threshold: Confidence threshold for detections (default: 0.1)
+        """
+        # Ensure the threshold is set from the parameter
+        self.threshold = float(score_threshold)  # Convert to float to ensure proper type
+        
+        # Split OCEAN_CLASSES into a list and format them
+        self.formatted_classes = [
+            f"a photo of a {name.strip()}" 
+            for class_string in self.OCEAN_CLASSES 
+            for name in class_string.split(", ")
+            if name.strip()
+        ]
         
         # Load model and processor
         self.processor = Owlv2Processor.from_pretrained(model_name)
@@ -88,10 +101,10 @@ class OWLHighlighter:
         Args:
             video_path: Path to the video file
             sample_rate: Optional frames to skip (e.g., 30 for 1fps at 30fps video)
-        
-        Returns:
-            VideoProcessingResult containing all detections and video metadata
         """
+        print(f"\n{Fore.CYAN}Processing video: {os.path.basename(video_path)}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Using detection threshold: {self.threshold}{Style.RESET_ALL}")
+        
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -99,25 +112,43 @@ class OWLHighlighter:
         if sample_rate is None:
             sample_rate = int(fps)  # Default to 1 frame per second
         
+        # Print video details
+        print(f"{Fore.CYAN}Video details:{Style.RESET_ALL}")
+        print(f"  • FPS: {fps}")
+        print(f"  • Total frames: {frame_count}")
+        print(f"  • Duration: {frame_count / fps:.2f} seconds")
+        print(f"  • Sampling every {sample_rate} frames ({fps/sample_rate:.1f} fps)")
+        
         video_name = os.path.basename(video_path)
         detections = []
+        frames_processed = 0
 
         for frame_num in range(0, frame_count, sample_rate):
+            # Update progress
+            progress = (frame_num / frame_count) * 100
+            print(f"\r{Fore.CYAN}Processing: [{frame_num}/{frame_count}] {progress:.1f}% complete{Style.RESET_ALL}", 
+                  end="", flush=True)
+            
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             ret, frame = cap.read()
             if not ret:
+                print(f"\n{Fore.RED}Warning: Failed to read frame {frame_num}{Style.RESET_ALL}")
                 continue
 
             # Convert frame to PIL Image
             pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-            # Run inference with pre-formatted class names
-            frame_detections = self._run_inference(pil_frame, self.formatted_classes)
+            # Run inference
+            frame_detections = self._run_inference(pil_frame)
+            frames_processed += 1
             
             # Process detections
             timestamp = frame_num / fps
             for det in frame_detections:
                 bbox = det["box"]
+                # Print detection details
+                print(f"\n{Fore.MAGENTA}★ Detection at {timestamp:.1f}s: {det['label']} ({det['score']:.2f}){Style.RESET_ALL}")
+                
                 # Crop the detected object
                 image_patch = pil_frame.crop((bbox[0], bbox[1], bbox[2], bbox[3]))
                 
@@ -132,7 +163,12 @@ class OWLHighlighter:
                 detections.append(detection)
 
         cap.release()
-
+        
+        # Print summary
+        print(f"\n{Fore.GREEN}✓ Processing complete:{Style.RESET_ALL}")
+        print(f"  • Processed {frames_processed} frames")
+        print(f"  • Found {len(detections)} detections")
+        
         return VideoProcessingResult(
             video_name=video_name,
             fps=fps,
@@ -141,32 +177,47 @@ class OWLHighlighter:
             detections=detections
         )
 
-    def _run_inference(self, image: Image.Image, class_names: List[str]) -> List[Dict]:
+    def _run_inference(self, image):
         """Run inference on a single image."""
-        inputs = self.processor(text=[class_names], images=image, return_tensors="pt")
+        batch_size = 16  # OWL-ViT's maximum text query length
+        all_detections = []
         
-        if torch.cuda.is_available():
-            inputs = {k: v.cuda() for k, v in inputs.items()}
+        # Process class names in batches
+        for i in range(0, len(self.formatted_classes), batch_size):
+            batch_classes = self.formatted_classes[i:i + batch_size]
+            
+            # Run inference on batch
+            inputs = self.processor(
+                text=[batch_classes],  # Note: still needs to be a list of lists
+                images=image, 
+                return_tensors="pt"
+            )
+            
+            if torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
 
-        with torch.no_grad():
-            outputs = self.model(**inputs)
+            with torch.no_grad():
+                outputs = self.model(**inputs)
 
-        target_sizes = torch.Tensor([image.size[::-1]])
-        results = self.processor.post_process_object_detection(
-            outputs=outputs, 
-            target_sizes=target_sizes, 
-            threshold=self.threshold
-        )[0]
+            target_sizes = torch.Tensor([image.size[::-1]])
+            results = self.processor.post_process_object_detection(
+                outputs=outputs, 
+                target_sizes=target_sizes, 
+                threshold=self.threshold
+            )[0]
 
-        detected_objects = []
-        for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-            if score > self.threshold:
-                detected_objects.append({
-                    "label": class_names[label],
-                    "score": score.item(),
-                    "box": box.cpu().numpy()
-                })
-        return detected_objects
+            # Process detections for this batch
+            for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+                if score > self.threshold:
+                    # Adjust label index to account for batching
+                    actual_label = batch_classes[label]
+                    all_detections.append({
+                        "label": actual_label,
+                        "score": score.item(),
+                        "box": box.cpu().numpy()
+                    })
+
+        return all_detections
 
     def create_timeline(self, 
                        result: VideoProcessingResult,
