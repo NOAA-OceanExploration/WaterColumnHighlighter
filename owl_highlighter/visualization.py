@@ -7,7 +7,8 @@ def create_timeline_visualization(
     result: VideoProcessingResult,
     output_path: str,
     width: int = 2000,
-    height: int = 1200
+    height: int = 1200,
+    show_labels: bool = True
 ) -> None:
     """
     Create a visual timeline of detections in the video.
@@ -17,6 +18,7 @@ def create_timeline_visualization(
         output_path: Path where the timeline image should be saved
         width: Width of the timeline image
         height: Height of the timeline image
+        show_labels: Whether to show labels under thumbnails in timeline
     """
     # Timeline layout parameters
     padding = 40
@@ -98,23 +100,27 @@ def create_timeline_visualization(
                      x + dot_radius, timeline_y + dot_radius], 
                     fill=color)
         
-        # Draw label
-        label = detection.label.capitalize()
-        label_width = label_font.getlength(label)
-        draw.text((paste_x + (image_patch.width - label_width) // 2, 
-                  paste_y + image_patch.height + 5), 
-                 label, fill=color, font=label_font)
+        # Only draw labels if show_labels is True
+        if show_labels:
+            # Draw label below the image
+            label = detection.label.capitalize()
+            label_width = label_font.getlength(label)
+            draw.text((paste_x + (image_patch.width - label_width) // 2, 
+                      paste_y + image_patch.height + 5), 
+                     label, fill=color, font=label_font)
         
-        # Convert timestamp to MM:SS format
+        # Always show timestamp regardless of show_labels setting
         minutes = int(detection.timestamp // 60)
         seconds = int(detection.timestamp % 60)
-        timestamp_text = f"{minutes}:{seconds:02d}"  # :02d ensures two digits for seconds
+        timestamp_text = f"{minutes}:{seconds:02d}"
         timestamp_width = label_font.getlength(timestamp_text)
+        y_offset = paste_y + image_patch.height + (25 if show_labels else 5)
         draw.text((paste_x + (image_patch.width - timestamp_width) // 2, 
-                  paste_y + image_patch.height + 20), 
+                  y_offset), 
                  timestamp_text, fill=color, font=label_font)
-        
-        y_offset -= (image_patch.height + 60)
+
+        # Adjust vertical spacing based on whether labels are shown
+        y_offset -= (image_patch.height + (60 if show_labels else 40))
         previous_frame = detection.frame_number
 
     # Add timestamp markers

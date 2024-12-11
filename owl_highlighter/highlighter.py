@@ -66,15 +66,17 @@ class OWLHighlighter:
     ]
 
     def __init__(self, model_name: str = "google/owlv2-base-patch16-ensemble", 
-                 score_threshold: float = 0.1):
+                 score_threshold: float = 0.1,
+                 show_labels: bool = True):
         """Initialize the OWL Highlighter.
         
         Args:
             model_name: Name of the OWL model to use
             score_threshold: Confidence threshold for detections (default: 0.1)
+            show_labels: Whether to show labels under thumbnails in timeline (default: True)
         """
-        # Ensure the threshold is set from the parameter
-        self.threshold = float(score_threshold)  # Convert to float to ensure proper type
+        self.threshold = float(score_threshold)
+        self.show_labels = show_labels
         
         # Split OCEAN_CLASSES into a list and format them
         self.formatted_classes = [
@@ -181,7 +183,6 @@ class OWLHighlighter:
                 normalized_detections = []
                 for detection in all_frame_detections:
                     normalized_confidence = (detection.confidence - min_conf) / (max_conf - min_conf)
-                    # Create new detection with normalized score
                     normalized_detection = Detection(
                         frame_number=detection.frame_number,
                         timestamp=detection.timestamp,
@@ -192,10 +193,10 @@ class OWLHighlighter:
                     )
                     normalized_detections.append(normalized_detection)
                 
-                # Get top quartile threshold from normalized scores
+                # Get threshold for top half of top quartile (1/8 of total)
                 normalized_scores = [d.confidence for d in normalized_detections]
-                quartile_threshold = sorted(normalized_scores, reverse=True)[len(normalized_scores) // 4]
-                detections = [d for d in normalized_detections if d.confidence >= quartile_threshold]
+                eighth_threshold = sorted(normalized_scores, reverse=True)[len(normalized_scores) // 8]
+                detections = [d for d in normalized_detections if d.confidence >= eighth_threshold]
             else:
                 # If all scores are identical, keep all detections
                 detections = all_frame_detections
@@ -210,9 +211,9 @@ class OWLHighlighter:
         print(f"  • Processed {frames_processed} frames")
         print(f"  • Found {len(all_frame_detections)} initial detections")
         if len(all_frame_detections) <= 4:
-            print(f"  • Kept all detections (too few for quartile filtering)")
+            print(f"  • Kept all detections (too few for filtering)")
         else:
-            print(f"  • Kept {len(detections)} detections after normalization and quartile filtering")
+            print(f"  • Kept {len(detections)} detections after normalization and top 1/8 filtering")
         
         return VideoProcessingResult(
             video_name=video_name,
@@ -278,4 +279,5 @@ class OWLHighlighter:
             width: Width of the timeline image
             height: Height of the timeline image
         """
-        create_timeline_visualization(result, output_path, width, height)
+        create_timeline_visualization(result, output_path, width, height, 
+                                   show_labels=self.show_labels)
