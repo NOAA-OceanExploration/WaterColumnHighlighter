@@ -94,13 +94,15 @@ class OWLHighlighter:
 
     def process_video(self, 
                      video_path: str,
-                     sample_rate: Optional[int] = None) -> VideoProcessingResult:
+                     sample_rate: Optional[int] = None,
+                     progress_callback: Optional[callable] = None) -> VideoProcessingResult:
         """
         Process a video file and return detections.
         
         Args:
             video_path: Path to the video file
             sample_rate: Optional frames to skip (e.g., 30 for 1fps at 30fps video)
+            progress_callback: Optional callback function to report progress (0-100)
         """
         print(f"\n{Fore.CYAN}Processing video: {os.path.basename(video_path)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Using detection threshold: {self.threshold}{Style.RESET_ALL}")
@@ -123,9 +125,14 @@ class OWLHighlighter:
         detections = []
         frames_processed = 0
 
+        all_frame_detections = []  # Temporary list to store all detections before filtering
+
         for frame_num in range(0, frame_count, sample_rate):
-            # Update progress
+            # Calculate and report progress
             progress = (frame_num / frame_count) * 100
+            if progress_callback:
+                progress_callback(progress)
+            
             print(f"\r{Fore.CYAN}Processing: [{frame_num}/{frame_count}] {progress:.1f}% complete{Style.RESET_ALL}", 
                   end="", flush=True)
             
@@ -140,17 +147,16 @@ class OWLHighlighter:
 
             # Run inference
             frame_detections = self._run_inference(pil_frame)
-            frames_processed += 1
             
-            # Process detections
-            timestamp = frame_num / fps
+            # Store frame detections and print them
             for det in frame_detections:
                 bbox = det["box"]
-                # Print detection details
-                print(f"\n{Fore.MAGENTA}★ Detection at {timestamp:.1f}s: {det['label']} ({det['score']:.2f}){Style.RESET_ALL}")
+                timestamp = frame_num / fps
                 
-                # Crop the detected object
-                image_patch = pil_frame.crop((bbox[0], bbox[1], bbox[2], bbox[3]))
+                # Print detection in real-time
+                print(f"\n  Found {det['label'].replace('a photo of a ', '')} "
+                      f"(confidence: {det['score']:.3f}) "
+                      f"at {timestamp:.2f}s")
                 
                 detection = Detection(
                     frame_number=frame_num,
@@ -158,16 +164,55 @@ class OWLHighlighter:
                     label=det["label"].replace('a photo of a ', ''),
                     confidence=det["score"],
                     bbox=tuple(bbox),
-                    image_patch=image_patch
+                    image_patch=pil_frame.crop((bbox[0], bbox[1], bbox[2], bbox[3]))
                 )
-                detections.append(detection)
+                all_frame_detections.append(detection)
+                frames_processed += 1
 
+        # Normalize scores and filter by quartile
+        if len(all_frame_detections) > 4:
+            confidence_scores = [d.confidence for d in all_frame_detections]
+            min_conf = min(confidence_scores)
+            max_conf = max(confidence_scores)
+            
+            # Avoid division by zero if all scores are identical
+            if max_conf != min_conf:
+                # Normalize scores to 0-1 range
+                normalized_detections = []
+                for detection in all_frame_detections:
+                    normalized_confidence = (detection.confidence - min_conf) / (max_conf - min_conf)
+                    # Create new detection with normalized score
+                    normalized_detection = Detection(
+                        frame_number=detection.frame_number,
+                        timestamp=detection.timestamp,
+                        label=detection.label,
+                        confidence=normalized_confidence,
+                        bbox=detection.bbox,
+                        image_patch=detection.image_patch
+                    )
+                    normalized_detections.append(normalized_detection)
+                
+                # Get top quartile threshold from normalized scores
+                normalized_scores = [d.confidence for d in normalized_detections]
+                quartile_threshold = sorted(normalized_scores, reverse=True)[len(normalized_scores) // 4]
+                detections = [d for d in normalized_detections if d.confidence >= quartile_threshold]
+            else:
+                # If all scores are identical, keep all detections
+                detections = all_frame_detections
+        else:
+            # For 4 or fewer detections, keep all of them
+            detections = all_frame_detections
+        
         cap.release()
         
-        # Print summary
+        # Print summary with additional context
         print(f"\n{Fore.GREEN}✓ Processing complete:{Style.RESET_ALL}")
         print(f"  • Processed {frames_processed} frames")
-        print(f"  • Found {len(detections)} detections")
+        print(f"  • Found {len(all_frame_detections)} initial detections")
+        if len(all_frame_detections) <= 4:
+            print(f"  • Kept all detections (too few for quartile filtering)")
+        else:
+            print(f"  • Kept {len(detections)} detections after normalization and quartile filtering")
         
         return VideoProcessingResult(
             video_name=video_name,
