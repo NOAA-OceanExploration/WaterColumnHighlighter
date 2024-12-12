@@ -46,6 +46,15 @@ import gc
 # Load configuration
 config = toml.load('../config.toml')
 
+# Set static random seed for reproducibility
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(RANDOM_SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def get_cosine_schedule_with_warmup(
     optimizer, num_warmup_steps, num_training_steps, num_cycles=0.5, last_epoch=-1
@@ -693,6 +702,23 @@ def download_data_from_s3(bucket_name, prefix, local_dir):
         return False
     return True
 
+def find_latest_checkpoint(checkpoint_dir, fold=None):
+    """Find the latest checkpoint in the specified directory."""
+    if fold is not None:
+        checkpoint_dir = os.path.join(checkpoint_dir, f'fold_{fold}')
+    
+    if not os.path.exists(checkpoint_dir):
+        return None
+        
+    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('checkpoint_step_')]
+    if not checkpoints:
+        return None
+        
+    # Extract step numbers and find the latest
+    steps = [int(f.split('_')[-1].split('.')[0]) for f in checkpoints]
+    latest_idx = steps.index(max(steps))
+    return os.path.join(checkpoint_dir, checkpoints[latest_idx])
+
 def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fine_tune=False, subsample_ratio=0.1):
     # Load configuration
     use_aws = config['aws'].get('use_aws', False)
@@ -805,39 +831,66 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
             raise ValueError(f"Unsupported model type: {model_type}")
 
         model.to(device)
-
-        criterion = FocalLoss(alpha=0.25, gamma=2)
+        
+        # Initialize optimizer
         optimizer = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=config['training']['learning_rate'])
+        
+        # Look for latest checkpoint
+        checkpoint_dir = os.path.join(config['paths']['checkpoint_dir'], f'fold_{fold + 1}')
+        latest_checkpoint = find_latest_checkpoint(checkpoint_dir)
+        
+        global_step = 0
+        start_epoch = 0
+        best_val_accuracy = 0.0
+        
+        if latest_checkpoint:
+            print(f"Loading checkpoint: {latest_checkpoint}")
+            checkpoint = torch.load(latest_checkpoint)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch']
+            global_step = checkpoint['global_step']
+            best_val_accuracy = checkpoint.get('best_val_accuracy', 0.0)
+            print(f"Resuming from epoch {start_epoch + 1}, global step {global_step}")
 
-        # Use scheduler parameters from config
-        scheduler_factor = config['training'].get('scheduler_factor', 0.5)
-        scheduler_patience = config['training'].get('scheduler_patience', 5)
-
-        # Initialize the new scheduler
-        total_steps = config['training']['num_epochs'] * len(train_dataloader)
-        warmup_steps = int(0.1 * total_steps)  # 10% of total steps for warmup
+        # Initialize criterion and scheduler
+        criterion = FocalLoss(alpha=0.25, gamma=2)
+        
+        # Recalculate total steps based on remaining epochs
+        total_steps = (config['training']['num_epochs'] - start_epoch) * len(train_dataloader)
+        warmup_steps = int(0.1 * total_steps)
+        
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=warmup_steps,
             num_training_steps=total_steps,
-            num_cycles=scheduler_factor  # Use the scheduler factor from config
+            num_cycles=config['training'].get('scheduler_factor', 0.5)
         )
 
         wandb.watch(model, log='all')
 
-        best_val_accuracy = 0.0
         early_stopping_patience = config['training']['early_stopping_patience']
         early_stopping_counter = 0
 
         checkpoint_dir = os.path.join(config['paths']['checkpoint_dir'], f'fold_{fold + 1}')
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        global_step = 0
-        for epoch in range(config['training']['num_epochs']):
+        for epoch in range(start_epoch, config['training']['num_epochs']):
             print(f'Epoch {epoch + 1}/{config["training"]["num_epochs"]}')
             model.train()
             train_loss = 0.0
-            for batch_idx, (frame_sequences, labels) in enumerate(train_dataloader):
+            
+            # Calculate the starting batch based on global_step
+            start_batch = global_step % len(train_dataloader) if global_step > 0 else 0
+            
+            # Skip already processed batches in the current epoch using tqdm for progress
+            train_iter = iter(train_dataloader)
+            if start_batch > 0:
+                print(f"Skipping {start_batch} batches to resume from checkpoint...")
+                for _ in tqdm(range(start_batch), desc="Skipping batches"):
+                    next(train_iter, None)
+            
+            for batch_idx, (frame_sequences, labels) in enumerate(train_iter, start=start_batch):
                 frame_sequences, labels = frame_sequences.to(device), labels.to(device)
                 optimizer.zero_grad()
                 outputs = model(frame_sequences)
@@ -848,7 +901,7 @@ def train(video_dir, csv_dir, model_type='lstm', feature_extractor='resnet', fin
                     model.parameters(), config['training']['gradient_clip']
                 )
                 optimizer.step()
-                scheduler.step()  # Step the scheduler every batch
+                scheduler.step()
 
                 train_loss += loss.item()
                 global_step += 1
@@ -1013,7 +1066,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_type', type=str, choices=['lstm', 'detr'], default=config['model']['model_type'], help='Type of model to use: lstm or detr')
     parser.add_argument('--feature_extractor', type=str, choices=['resnet', 'detr'], default=config['model']['feature_extractor'], help='Feature extractor to use with LSTM model')
     parser.add_argument('--fine_tune', action='store_true', default=config['model']['fine_tune'], help='Fine-tune the feature extractor or DETR model')
-    parser.add_argument('--subsample_ratio', type=float, default=0.1, help='Ratio of dataset to use for training (0-1)')
+    parser.add_argument('--subsample_ratio', type=float, default=0.01, help='Ratio of dataset to use for training (0-1)')
     args = parser.parse_args()
 
     # Get paths from config instead of arguments

@@ -1,30 +1,31 @@
 [paths]
 model_save_path = "WaterColumnHighlighter/models"
 dataset_cache_dir = "WaterColumnHighlighter/models"
-checkpoint_dir = "./checkpoints"
-video_dir = "/cd_server_demo"      # Add the path to your video directory
-csv_dir = "/path/to/csvs"          # Add the path to your CSV annotations
+checkpoint_dir = "/media/patc/puck_of_destiny/critter_detector/checkpoints"
+video_dir = "/media/patc/puck_of_destiny/patrick_work/Data"
+csv_dir = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations"
+mode = "train"
+highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
+timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
 
 [training]
-window_size = 21        # Number of frames in each input sequence for LSTM model
+window_size = 20        # Number of frames in each input sequence for LSTM model
 stride = 1
-batch_size = 8
+batch_size = 4
 num_epochs = 1
 learning_rate = 0.001
-hidden_dim = 256        # Hidden dimension size for LSTM
-num_layers = 2          # Number of layers for LSTM
 k_folds = 5
 early_stopping_patience = 10
 gradient_clip = 1.0
-checkpoint_steps = 10000
-# Scheduler parameters (if using a scheduler that requires them)
+checkpoint_steps = 1000
 scheduler_factor = 0.5
 scheduler_patience = 5
-optimizer = "Adam"  # Options: "Adam", "SGD", etc.
+optimizer = "Adam"     # Options: "Adam", "SGD", etc.
 loss_function = "FocalLoss"  # Options: "FocalLoss", "CrossEntropy", etc.
+mixed_precision = true  # New setting
 
 [data]
-frame_rate = 29         # Frames per second to sample from videos
+frame_rate = 29        # Frames per second to sample from videos
 
 [augmentation]
 random_crop_size = 200
@@ -39,19 +40,19 @@ wandb_entity = "patrickallencooper"
 log_interval = 10
 
 [model]
-model_type = "lstm"        # Options: "lstm" or "detr"
+model_type = "lstm"    # Options: "lstm" or "detr"
 feature_extractor = "resnet"  # Options for LSTM model: "resnet" or "detr"
-fine_tune = false          # Whether to fine-tune the feature extractor or DETR model
-hidden_dim = 256  # Hidden dimension size for LSTM
-num_layers = 2    # Number of layers for LSTM
+fine_tune = false      # Whether to fine-tune the feature extractor or DETR model
+hidden_dim = 32        # Hidden dimension size for LSTM
+num_layers = 5         # Number of layers for LSTM
 
-[yolo]
-max_num_boxes = 100  # Maximum number of boxes for YOLO detection
-score_thr = 0.05     # Score threshold for YOLO detection
-nms_thr = 0.5        # Non-Maximum Suppression threshold for YOLO
+[owl]
+max_num_boxes = 10    # Maximum number of boxes
+nms_thr = 0.5         # Non-Maximum Suppression threshold
+score_thr = 0.1       # Detection confidence threshold
 
 [aws]
-use_aws = false  # Set to true to enable AWS training
-s3_bucket_name = "your-s3-bucket-name"  # Name of the S3 bucket
-s3_data_prefix = "data/"  # Prefix for the data in the S3 bucket
-aws_region = "us-west-2"  # AWS region where your resources are located
+use_aws = false       # Set to true to enable AWS training
+s3_bucket_name = "your-s3-bucket-name"
+s3_data_prefix = "data/"
+aws_region = "us-west-2"
