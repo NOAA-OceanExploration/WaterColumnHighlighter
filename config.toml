@@ -7,6 +7,8 @@ csv_dir = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations"
 mode = "train"
 highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
 timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
+evaluation_output_dir = "evaluation_results"
+annotation_csv = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations/annotations.csv"
 
 [training]
 window_size = 20        # Number of frames in each input sequence for LSTM model
@@ -56,3 +58,7 @@ use_aws = false       # Set to true to enable AWS training
 s3_bucket_name = "your-s3-bucket-name"
 s3_data_prefix = "data/"
 aws_region = "us-west-2"
+
+[evaluation]
+temporal_tolerance = 2.0  # Time window in seconds for matching detections with annotations
+min_confidence = 0.1     # Minimum confidence threshold for considering detections
