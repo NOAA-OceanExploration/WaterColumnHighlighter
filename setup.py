@@ -7,10 +7,17 @@ setup(
     install_requires=[
         "torch>=2.0.0",
         "torchvision>=0.15.0",
-        "transformers>=4.30.0",
+        "transformers>=4.36.2",
         "Pillow>=9.0.0",
-        "opencv-python>=4.7.0",
+        "opencv-python>=4.9.0.80",
         "colorama>=0.4.6",
+        "toml",
+        "safetensors",
+        "scipy",
+        "pandas",
+        "scikit-learn",
+        "matplotlib",
+        "tqdm"
     ],
     extras_require={
         "dev": [
@@ -30,5 +37,13 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.6",
+    package_data={
+        "owl_highlighter": ["*.ttf"],
+    },
+    entry_points={
+        "console_scripts": [
+            "owl-evaluate=owl_highlighter.evaluate_detections:main",
+        ],
+    },
 )
