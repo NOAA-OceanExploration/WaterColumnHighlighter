@@ -2,6 +2,7 @@ import pandas as pd
 import os
 from datetime import datetime, timedelta
 from owl_highlighter import OWLHighlighter
+from owl_highlighter.models import Detection, VideoProcessingResult
 from typing import List, Dict, Tuple
 import numpy as np
 from sklearn.metrics import precision_recall_curve, average_precision_score
@@ -31,25 +32,62 @@ class DetectionEvaluator:
         
     def _load_annotations(self, csv_path: str) -> Dict[str, List[datetime]]:
         """Load and process SeaTube annotation CSV file."""
+        print(f"Loading annotations from: {csv_path}")
         df = pd.read_csv(csv_path)
         
-        # Convert 'Start Date' to datetime
-        df['Start Date'] = pd.to_datetime(df['Start Date'])
+        # Print some sample rows to understand the data better
+        print("\nFirst few rows of annotations:")
+        print(df[['Dive ID', 'Start Date', 'Comment', 'Taxonomy', 'Taxon', 'Taxon Path']].head(10).to_string())
         
-        # Extract dive ID from filename pattern (EX2304)
-        df['Dive ID'] = df['Video'].str.extract(r'(EX\d+)_')
+        # Convert 'Start Date' to datetime and ensure UTC timezone
+        df['Start Date'] = pd.to_datetime(df['Start Date']).dt.tz_localize(None)
         
-        # Group annotations by dive
+        # Map numeric dive ID to EX format if needed
+        dive_mapping = {'2853': 'EX2304'}  # Add more mappings as needed
+        df['Formatted Dive ID'] = df['Dive ID'].astype(str).map(dive_mapping)
+        
+        # Group annotations by formatted dive ID
         annotations = {}
-        for dive_id, group in df.groupby('Dive ID'):
-            # Filter out non-organism annotations
+        for dive_id, group in df.groupby('Formatted Dive ID'):
+            if pd.isna(dive_id):
+                continue
+            
+            # Look for organisms in comments and taxonomy fields
             organism_annotations = group[
-                group['Concept'].str.contains('|'.join(self.detector.formatted_classes), 
-                                            case=False, 
-                                            na=False)
+                (group['Comment'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
+                                             case=False, 
+                                             na=False)) |
+                (group['Taxonomy'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
+                                              case=False, 
+                                              na=False)) |
+                (group['Taxon Path'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
+                                                case=False, 
+                                                na=False))
             ]
+            
             if not organism_annotations.empty:
                 annotations[str(dive_id)] = organism_annotations['Start Date'].tolist()
+        
+        print(f"\nLoaded annotations for {len(annotations)} dives")
+        
+        # Debug info
+        if not annotations:
+            print("\nWarning: No annotations were loaded!")
+            print("\nUnique Dive IDs in CSV:", df['Dive ID'].unique().tolist())
+            print("\nUnique Comments (sample):", df['Comment'].dropna().head(10).tolist())
+        else:
+            print("\nExample matched annotations:")
+            for dive_id in list(annotations.keys())[:3]:
+                print(f"\nDive {dive_id}:")
+                print(f"Number of annotations: {len(annotations[dive_id])}")
+                print("First few timestamps:", annotations[dive_id][:3])
+            
+            # Print sample of matched rows
+            print("\nSample of matched annotations:")
+            for dive_id in list(annotations.keys())[:2]:
+                matched = df[df['Formatted Dive ID'] == dive_id].head(3)
+                print(f"\nDive {dive_id}:")
+                print(matched[['Start Date', 'Comment', 'Taxonomy', 'Taxon Path']].to_string())
         
         return annotations
     
@@ -63,8 +101,14 @@ class DetectionEvaluator:
         ground_truth = self.annotations[dive_id]
         video_timestamp = self._parse_video_timestamp(os.path.basename(video_path))
         
+        # Debug timestamp comparison
+        print(f"\nComparing timestamps for {os.path.basename(video_path)}:")
+        print(f"Video timestamp: {video_timestamp}")
+        print(f"First few ground truth timestamps: {ground_truth[:3]}")
+        
         # Only evaluate videos within annotation time range
         if not any(abs((gt - video_timestamp).total_seconds()) < 300 for gt in ground_truth):
+            print(f"Video {os.path.basename(video_path)} outside annotation timerange")
             return None
         
         # Run detector on video
@@ -83,13 +127,15 @@ class DetectionEvaluator:
         """Evaluate all videos in the directory."""
         results = {}
         
-        # Find all videos
+        # Find all ROVHD videos
         video_files = [f for f in os.listdir(self.video_dir) 
-                      if f.endswith(('.mp4', '.mov', '.avi'))]
+                      if f.endswith(('.mp4', '.mov', '.avi')) and 'ROVHD' in f]
+        
+        print(f"\nFound {len(video_files)} ROVHD videos to evaluate")
         
         for video_file in tqdm(video_files, desc="Evaluating videos"):
             # Extract dive ID from filename
-            dive_id = video_file.split('_')[0]  # Adjust based on your naming convention
+            dive_id = video_file.split('_')[0]  # Gets EX2304
             
             video_path = os.path.join(self.video_dir, video_file)
             result = self.evaluate_video(video_path, dive_id)
@@ -182,13 +228,28 @@ class DetectionEvaluator:
         timestamp_match = re.search(r'(\d{8}T\d{6}Z)', filename)
         if timestamp_match:
             timestamp_str = timestamp_match.group(1)
+            # Parse without timezone info to match annotation timestamps
             return datetime.strptime(timestamp_str, '%Y%m%dT%H%M%SZ')
         return None
 
 def main():
     """Entry point for evaluation script."""
-    # Load configuration
-    config = toml.load('../config.toml')
+    # Find config file relative to package location
+    package_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(os.path.dirname(package_dir), 'config.toml')
+    
+    try:
+        config = toml.load(config_path)
+    except FileNotFoundError:
+        # Fallback to current directory
+        config_path = os.path.join(os.getcwd(), 'config.toml')
+        try:
+            config = toml.load(config_path)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                "Could not find config.toml in package directory or current directory. "
+                f"Looked in:\n1. {os.path.dirname(package_dir)}\n2. {os.getcwd()}"
+            )
     
     # Get paths from config
     ANNOTATION_CSV = config['paths']['annotation_csv']
