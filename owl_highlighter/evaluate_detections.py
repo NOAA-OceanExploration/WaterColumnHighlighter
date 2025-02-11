@@ -7,6 +7,8 @@ import numpy as np
 from sklearn.metrics import precision_recall_curve, average_precision_score
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import toml
+import re
 
 class DetectionEvaluator:
     def __init__(self, annotation_csv: str, video_dir: str, temporal_tolerance: float = 2.0):
@@ -28,87 +30,54 @@ class DetectionEvaluator:
         self.annotations = self._load_annotations(annotation_csv)
         
     def _load_annotations(self, csv_path: str) -> Dict[str, List[datetime]]:
-        """Load and process annotation CSV file."""
+        """Load and process SeaTube annotation CSV file."""
         df = pd.read_csv(csv_path)
         
         # Convert 'Start Date' to datetime
         df['Start Date'] = pd.to_datetime(df['Start Date'])
         
-        # Group annotations by video/dive
+        # Extract dive ID from filename pattern (EX2304)
+        df['Dive ID'] = df['Video'].str.extract(r'(EX\d+)_')
+        
+        # Group annotations by dive
         annotations = {}
         for dive_id, group in df.groupby('Dive ID'):
-            # Filter out non-organism annotations (like "ROV powered off")
-            organism_annotations = group[group['Taxon'].notna()]
+            # Filter out non-organism annotations
+            organism_annotations = group[
+                group['Concept'].str.contains('|'.join(self.detector.formatted_classes), 
+                                            case=False, 
+                                            na=False)
+            ]
             if not organism_annotations.empty:
                 annotations[str(dive_id)] = organism_annotations['Start Date'].tolist()
         
         return annotations
     
     def evaluate_video(self, video_path: str, dive_id: str) -> Dict[str, float]:
-        """
-        Evaluate detector performance on a single video.
-        
-        Args:
-            video_path: Path to video file
-            dive_id: ID of the dive/video for matching with annotations
-            
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        # Get ground truth annotations for this video
+        """Evaluate detector performance on a single video."""
+        # Get ground truth annotations for this dive
         if dive_id not in self.annotations:
             print(f"No annotations found for dive {dive_id}")
             return None
-            
+        
         ground_truth = self.annotations[dive_id]
+        video_timestamp = self._parse_video_timestamp(os.path.basename(video_path))
+        
+        # Only evaluate videos within annotation time range
+        if not any(abs((gt - video_timestamp).total_seconds()) < 300 for gt in ground_truth):
+            return None
         
         # Run detector on video
         result = self.detector.process_video(video_path)
         
-        # Convert detections to timestamps
-        detection_times = [d.timestamp for d in result.detections]
+        # Calculate metrics with temporal matching
+        metrics = self._calculate_temporal_metrics(
+            result.detections,
+            ground_truth,
+            self.temporal_tolerance
+        )
         
-        # Calculate temporal overlap
-        true_positives = 0
-        false_positives = 0
-        
-        # For each detection, check if there's a matching ground truth annotation
-        for det_time in detection_times:
-            matched = False
-            for gt_time in ground_truth:
-                time_diff = abs((gt_time - pd.Timestamp(det_time)).total_seconds())
-                if time_diff <= self.temporal_tolerance:
-                    true_positives += 1
-                    matched = True
-                    break
-            if not matched:
-                false_positives += 1
-        
-        # Calculate false negatives (missed annotations)
-        false_negatives = 0
-        for gt_time in ground_truth:
-            matched = False
-            for det_time in detection_times:
-                time_diff = abs((gt_time - pd.Timestamp(det_time)).total_seconds())
-                if time_diff <= self.temporal_tolerance:
-                    matched = True
-                    break
-            if not matched:
-                false_negatives += 1
-        
-        # Calculate metrics
-        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-        
-        return {
-            'precision': precision,
-            'recall': recall,
-            'f1_score': f1,
-            'true_positives': true_positives,
-            'false_positives': false_positives,
-            'false_negatives': false_negatives
-        }
+        return metrics
     
     def evaluate_all_videos(self) -> Dict[str, Dict[str, float]]:
         """Evaluate all videos in the directory."""
@@ -164,13 +133,76 @@ class DetectionEvaluator:
                 for metric, value in metrics.items():
                     f.write(f"  {metric}: {value:.3f}\n")
 
-if __name__ == "__main__":
-    # Configuration
-    ANNOTATION_CSV = "path/to/annotations.csv"
-    VIDEO_DIR = "path/to/videos"
-    OUTPUT_DIR = "evaluation_results"
+    def _calculate_temporal_metrics(
+        self,
+        detections: List[Detection],
+        ground_truth: List[datetime],
+        tolerance: float
+    ) -> Dict[str, float]:
+        """Calculate precision/recall with temporal matching."""
+        true_positives = 0
+        detection_times = [d.timestamp for d in detections]
+        
+        # Match detections to ground truth
+        matched_gt = set()
+        matched_det = set()
+        
+        for i, det_time in enumerate(detection_times):
+            for j, gt_time in enumerate(ground_truth):
+                if j in matched_gt:
+                    continue
+                
+                time_diff = abs((gt_time - pd.Timestamp(det_time)).total_seconds())
+                if time_diff <= tolerance:
+                    true_positives += 1
+                    matched_gt.add(j)
+                    matched_det.add(i)
+                    break
+        
+        false_positives = len(detection_times) - true_positives
+        false_negatives = len(ground_truth) - true_positives
+        
+        # Calculate metrics
+        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        
+        return {
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'true_positives': true_positives,
+            'false_positives': false_positives,
+            'false_negatives': false_negatives
+        }
+
+    def _parse_video_timestamp(self, filename: str) -> datetime:
+        """Extract timestamp from video filename."""
+        # Extract timestamp portion (e.g., 20230715T163244Z)
+        timestamp_match = re.search(r'(\d{8}T\d{6}Z)', filename)
+        if timestamp_match:
+            timestamp_str = timestamp_match.group(1)
+            return datetime.strptime(timestamp_str, '%Y%m%dT%H%M%SZ')
+        return None
+
+def main():
+    """Entry point for evaluation script."""
+    # Load configuration
+    config = toml.load('../config.toml')
     
-    # Run evaluation
-    evaluator = DetectionEvaluator(ANNOTATION_CSV, VIDEO_DIR)
+    # Get paths from config
+    ANNOTATION_CSV = config['paths']['annotation_csv']
+    VIDEO_DIR = config['paths']['video_dir']
+    OUTPUT_DIR = config['paths']['evaluation_output_dir']
+    
+    # Run evaluation with config parameters
+    evaluator = DetectionEvaluator(
+        ANNOTATION_CSV, 
+        VIDEO_DIR,
+        temporal_tolerance=config['evaluation']['temporal_tolerance']
+    )
     results = evaluator.evaluate_all_videos()
     evaluator.plot_results(results, OUTPUT_DIR)
+
+if __name__ == "__main__":
+    main()
