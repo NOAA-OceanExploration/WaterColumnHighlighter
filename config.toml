@@ -2,13 +2,13 @@
 model_save_path = "WaterColumnHighlighter/models"
 dataset_cache_dir = "WaterColumnHighlighter/models"
 checkpoint_dir = "/media/patc/puck_of_destiny/critter_detector/checkpoints"
-video_dir = "/media/patc/puck_of_destiny/patrick_work/Data"
+video_dir = "/home/patc/data/Example_Dive/Compressed"
 csv_dir = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations"
 mode = "train"
 highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
 timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
-evaluation_output_dir = "evaluation_results"
-annotation_csv = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations/annotations.csv"
+evaluation_output_dir = "/home/patc/data/Example_Dive/evaluation_results"
+annotation_csv = "/home/patc/data/Example_Dive/SeaTubeAnnotations_20230715T153000.000Z_20230716T020000.000Z/SeaTubeAnnotations_20230715T153000.000Z_20230716T020000.000Z.csv"
 
 [training]
 window_size = 20        # Number of frames in each input sequence for LSTM model
@@ -51,7 +51,7 @@ num_layers = 5         # Number of layers for LSTM
 [owl]
 max_num_boxes = 10    # Maximum number of boxes
 nms_thr = 0.5         # Non-Maximum Suppression threshold
-score_thr = 0.1       # Detection confidence threshold
+score_thr = 0.8       # Detection confidence threshold
 
 [aws]
 use_aws = false       # Set to true to enable AWS training
@@ -60,5 +60,4 @@ s3_data_prefix = "data/"
 aws_region = "us-west-2"
 
 [evaluation]
-temporal_tolerance = 2.0  # Time window in seconds for matching detections with annotations
-min_confidence = 0.1     # Minimum confidence threshold for considering detections
+temporal_tolerance = 20.0  # Time window in seconds for matching detections

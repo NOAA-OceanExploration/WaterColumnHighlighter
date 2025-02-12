@@ -13,21 +13,20 @@ import re
 
 class DetectionEvaluator:
     def __init__(self, annotation_csv: str, video_dir: str, temporal_tolerance: float = 2.0):
-        """
-        Initialize the evaluator.
+        """Initialize evaluator.
         
         Args:
-            annotation_csv: Path to CSV file containing ground truth annotations
-            video_dir: Directory containing the videos
-            temporal_tolerance: Time window (in seconds) for matching detections
+            annotation_csv: Path to SeaTube annotation CSV
+            video_dir: Directory containing videos to evaluate
+            temporal_tolerance: Time window (seconds) for matching detections to ground truth
         """
-        self.temporal_tolerance = temporal_tolerance
         self.video_dir = video_dir
+        self.temporal_tolerance = temporal_tolerance
         
-        # Initialize OWL Highlighter
-        self.detector = OWLHighlighter(score_threshold=0.1)
+        # Initialize detector
+        self.detector = OWLHighlighter()
         
-        # Load and preprocess annotations
+        # Load and process annotations
         self.annotations = self._load_annotations(annotation_csv)
         
     def _load_annotations(self, csv_path: str) -> Dict[str, List[datetime]]:
@@ -93,7 +92,6 @@ class DetectionEvaluator:
     
     def evaluate_video(self, video_path: str, dive_id: str) -> Dict[str, float]:
         """Evaluate detector performance on a single video."""
-        # Get ground truth annotations for this dive
         if dive_id not in self.annotations:
             print(f"No annotations found for dive {dive_id}")
             return None
@@ -111,7 +109,7 @@ class DetectionEvaluator:
             print(f"Video {os.path.basename(video_path)} outside annotation timerange")
             return None
         
-        # Run detector on video
+        # Run detector on video using default threshold from OWL config
         result = self.detector.process_video(video_path)
         
         # Calculate metrics with temporal matching
