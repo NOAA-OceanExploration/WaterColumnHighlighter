@@ -193,10 +193,15 @@ class OWLHighlighter:
                     )
                     normalized_detections.append(normalized_detection)
                 
-                # Get threshold for top half of top quartile (1/8 of total)
+                # Make filtering more strict by changing this fraction
+                # For example, to keep only top 5% instead of top 12.5%:
+                fraction = 20  # 1/20 = 5%
+                # Or for top 1%:
+                # fraction = 100  # 1/100 = 1%
+                
                 normalized_scores = [d.confidence for d in normalized_detections]
-                eighth_threshold = sorted(normalized_scores, reverse=True)[len(normalized_scores) // 8]
-                detections = [d for d in normalized_detections if d.confidence >= eighth_threshold]
+                threshold = sorted(normalized_scores, reverse=True)[len(normalized_scores) // fraction]
+                detections = [d for d in normalized_detections if d.confidence >= threshold]
             else:
                 # If all scores are identical, keep all detections
                 detections = all_frame_detections

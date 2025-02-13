@@ -16,7 +16,7 @@ class OWLHighlighter:
         self.output_dir = output_dir
         self.timeline_dir = timeline_dir
         self.class_names = [f"a photo of a {name.strip()}" for name in class_names.split(", ")]
-        self.threshold = config.get('score_thr', 0.05)
+        self.threshold = config.get('score_thr', 0.95)
         
         # Create output directories
         os.makedirs(self.output_dir, exist_ok=True)
@@ -403,6 +403,6 @@ if __name__ == "__main__":
         output_dir=config['paths']['highlight_output_dir'],
         timeline_dir=config['paths']['timeline_output_dir'],
         class_names=ocean_classes,
-        config={'score_thr': config['owl'].get('score_thr', 0.05)}
+        config={'score_thr': config['owl'].get('score_thr', 0.95)}
     )
     highlighter.process_videos()
