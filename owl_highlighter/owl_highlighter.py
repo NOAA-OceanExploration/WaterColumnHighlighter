@@ -10,13 +10,31 @@ init()  # Initialize colorama
 
 
 class OWLHighlighter:
-    def __init__(self, video_dir, output_dir, timeline_dir, class_names, config):
+    def __init__(self, video_dir: str, output_dir: str, timeline_dir: str, 
+                 class_names: tuple, config: dict):
+        """Initialize the OWL Highlighter.
+        
+        Args:
+            video_dir: Directory containing input videos
+            output_dir: Directory for highlight outputs
+            timeline_dir: Directory for timeline visualizations
+            class_names: Tuple of class names to detect
+            config: Configuration dictionary containing score_thr and other settings
+        """
         print(f"{Fore.CYAN}Initializing Highlighter...{Style.RESET_ALL}")
         self.video_dir = video_dir
         self.output_dir = output_dir
         self.timeline_dir = timeline_dir
-        self.class_names = [f"a photo of a {name.strip()}" for name in class_names.split(", ")]
-        self.threshold = config.get('score_thr', 0.95)
+        self.threshold = float(config.get('score_thr', 0.95))  # Use config threshold with default 0.95
+        self.show_labels = True
+        
+        # Split class_names into a list and format them
+        self.formatted_classes = [
+            f"a photo of a {name.strip()}" 
+            for class_string in class_names
+            for name in class_string.split(", ")
+            if name.strip()
+        ]
         
         # Create output directories
         os.makedirs(self.output_dir, exist_ok=True)
@@ -104,7 +122,7 @@ class OWLHighlighter:
 
     def _run_inference(self, image):
         """Run inference on a single image."""
-        inputs = self.processor(text=[self.class_names], images=image, return_tensors="pt")
+        inputs = self.processor(text=[self.formatted_classes], images=image, return_tensors="pt")
         
         if torch.cuda.is_available():
             inputs = {k: v.cuda() for k, v in inputs.items()}
@@ -125,7 +143,7 @@ class OWLHighlighter:
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
             if score > self.threshold:
                 detected_objects.append({
-                    "label": self.class_names[label],
+                    "label": self.formatted_classes[label],
                     "box": box.cpu().numpy()  # Convert to numpy array for easier handling
                 })
         return detected_objects
