@@ -66,7 +66,7 @@ class OWLHighlighter:
     ]
 
     def __init__(self, model_name: str = "google/owlv2-base-patch16-ensemble", 
-                 score_threshold: float = 0.1,
+                 score_threshold: float = 0.85,
                  show_labels: bool = True):
         """Initialize the OWL Highlighter.
         
@@ -195,7 +195,7 @@ class OWLHighlighter:
                 
                 # Make filtering more strict by changing this fraction
                 # For example, to keep only top 5% instead of top 12.5%:
-                fraction = 20  # 1/20 = 5%
+                fraction = 50  # 1/20 = 5%
                 # Or for top 1%:
                 # fraction = 100  # 1/100 = 1%
                 
@@ -218,7 +218,7 @@ class OWLHighlighter:
         if len(all_frame_detections) <= 4:
             print(f"  • Kept all detections (too few for filtering)")
         else:
-            print(f"  • Kept {len(detections)} detections after normalization and top 1/8 filtering")
+            print(f"  • Kept {len(detections)} detections after normalization and top 1/{fraction}% filtering")
         
         return VideoProcessingResult(
             video_name=video_name,

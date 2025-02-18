@@ -23,8 +23,13 @@ class DetectionEvaluator:
         self.video_dir = video_dir
         self.temporal_tolerance = temporal_tolerance
         
-        # Initialize detector
-        self.detector = OWLHighlighter()
+        # Load config
+        package_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(os.path.dirname(package_dir), 'config.toml')
+        config = toml.load(config_path)
+        
+        # Initialize detector with threshold from config
+        self.detector = OWLHighlighter(score_threshold=config['owl']['score_thr'])
         
         # Load and process annotations
         self.annotations = self._load_annotations(annotation_csv)
