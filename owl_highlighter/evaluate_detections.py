@@ -86,35 +86,54 @@ class DetectionEvaluator:
             'test', 'message', 'powered off', 'launch'
         ]
         
+        print("\n===== ANNOTATION FILTERING PROCESS =====")
+        
         # Group annotations by formatted dive ID
         annotations = {}
         for dive_id, group in df.groupby('Formatted Dive ID'):
             if pd.isna(dive_id):
                 continue
             
+            print(f"\nProcessing Dive ID: {dive_id}")
+            print(f"Total annotations for this dive: {len(group)}")
+            
             # Look for organisms in comments and taxonomy fields (positive match)
+            organism_pattern = 'fish|shark|squid|jellyfish|cephalopod'
             organism_annotations = group[
-                (group['Comment'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
-                                             case=False, 
-                                             na=False)) |
-                (group['Taxonomy'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
-                                              case=False, 
-                                              na=False)) |
-                (group['Taxon Path'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
-                                                case=False, 
-                                                na=False))
+                (group['Comment'].str.contains(organism_pattern, case=False, na=False)) |
+                (group['Taxonomy'].str.contains(organism_pattern, case=False, na=False)) |
+                (group['Taxon Path'].str.contains(organism_pattern, case=False, na=False))
             ]
+            
+            print(f"Annotations with organism terms: {len(organism_annotations)}")
             
             # Filter out operational annotations (negative filter)
             operational_pattern = '|'.join(operational_terms)
             operational_mask = organism_annotations['Comment'].str.contains(
                 operational_pattern, case=False, na=False)
+            
+            # Count how many are being filtered out
+            filtered_out_count = operational_mask.sum()
+            print(f"Annotations filtered out due to operational terms: {filtered_out_count}")
+            
             organism_annotations = organism_annotations[~operational_mask]
+            print(f"Final organism annotations after filtering: {len(organism_annotations)}")
             
             if not organism_annotations.empty:
                 annotations[str(dive_id)] = organism_annotations['Start Date'].tolist()
+                
+                # Print first few kept annotations
+                print("\nSample kept annotations:")
+                sample = organism_annotations.head(3)
+                if not sample.empty:
+                    print(sample[['Start Date', 'Comment', 'Taxonomy', 'Taxon Path']].to_string())
+                else:
+                    print("No annotations kept")
+            else:
+                print("No organism annotations remained after filtering")
         
-        print(f"\nLoaded annotations for {len(annotations)} dives")
+        print("\n========================================")
+        print(f"Loaded annotations for {len(annotations)} dives")
         
         # Debug info
         if not annotations:
@@ -127,13 +146,6 @@ class DetectionEvaluator:
                 print(f"\nDive {dive_id}:")
                 print(f"Number of annotations: {len(annotations[dive_id])}")
                 print("First few timestamps:", annotations[dive_id][:3])
-            
-            # Print sample of matched rows
-            print("\nSample of matched annotations:")
-            for dive_id in list(annotations.keys())[:2]:
-                matched = df[df['Formatted Dive ID'] == dive_id].head(3)
-                print(f"\nDive {dive_id}:")
-                print(matched[['Start Date', 'Comment', 'Taxonomy', 'Taxon Path']].to_string())
         
         return annotations
     
@@ -333,6 +345,13 @@ class DetectionEvaluator:
         
         true_positives = 0
         detection_times = [d.timestamp for d in filtered_detections]
+        
+        # Print clearly the number of filtered detections
+        print(f"\n===== DETECTION FILTERING RESULTS =====")
+        print(f"Original detections: {len(detections)}")
+        print(f"After filtering: {len(filtered_detections)}")
+        print(f"Removed: {len(detections) - len(filtered_detections)} detections")
+        print(f"========================================\n")
         
         # Debug information
         print(f"\nDEBUG: Temporal Matching Details")
