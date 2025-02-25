@@ -47,13 +47,52 @@ class DetectionEvaluator:
         dive_mapping = {'2853': 'EX2304'}  # Add more mappings as needed
         df['Formatted Dive ID'] = df['Dive ID'].astype(str).map(dive_mapping)
         
+        # Define terms to exclude for operational annotations
+        operational_terms = [
+            # ROV and vehicle terms
+            'rov', 'vehicle', 'submersible', 'platform',
+            
+            # Camera and imaging equipment
+            'camera', 'lens', 'light', 'strobe', 'laser', 'imaging',
+            
+            # Sampling equipment
+            'sampler', 'niskin', 'bottle', 'collection', 'scoop', 'net',
+            'trap', 'corer', 'basket', 'container',
+            
+            # Sensors and instruments
+            'ctd', 'sensor', 'probe', 'instrument', 'gauge', 'meter',
+            'sonar', 'hydrophone', 'transducer',
+            
+            # Support equipment
+            'cable', 'tether', 'line', 'rope', 'wire', 'chain',
+            'manipulator', 'arm', 'gripper', 'tool', 'equipment',
+            
+            # Ship and vessel terms
+            'vessel', 'ship', 'boat', 'hull', 'deck', 'propeller',
+            
+            # Infrastructure
+            'pipeline', 'cable', 'anchor', 'mooring', 'buoy',
+            'platform', 'structure', 'debris',
+            
+            # Operation terms
+            'deployment', 'recovery', 'operation', 'mission',
+            'survey', 'transect', 'sample',
+            
+            # Event markers
+            'start', 'begin', 'end', 'stop', 'pause', 'resume',
+            'initiated', 'completed', 'commenced', 'finished',
+            
+            # Test and message terms
+            'test', 'message', 'powered off', 'launch'
+        ]
+        
         # Group annotations by formatted dive ID
         annotations = {}
         for dive_id, group in df.groupby('Formatted Dive ID'):
             if pd.isna(dive_id):
                 continue
             
-            # Look for organisms in comments and taxonomy fields
+            # Look for organisms in comments and taxonomy fields (positive match)
             organism_annotations = group[
                 (group['Comment'].str.contains('fish|shark|squid|jellyfish|cephalopod', 
                                              case=False, 
@@ -65,6 +104,12 @@ class DetectionEvaluator:
                                                 case=False, 
                                                 na=False))
             ]
+            
+            # Filter out operational annotations (negative filter)
+            operational_pattern = '|'.join(operational_terms)
+            operational_mask = organism_annotations['Comment'].str.contains(
+                operational_pattern, case=False, na=False)
+            organism_annotations = organism_annotations[~operational_mask]
             
             if not organism_annotations.empty:
                 annotations[str(dive_id)] = organism_annotations['Start Date'].tolist()
