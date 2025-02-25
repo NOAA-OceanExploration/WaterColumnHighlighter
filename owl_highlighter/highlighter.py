@@ -11,6 +11,7 @@ from .visualization import create_timeline_visualization
 from colorama import Fore, Style
 import numpy as np
 import toml
+from tqdm import tqdm
 
 class BaseDetector:
     """Base class for all detectors"""
@@ -440,7 +441,8 @@ class CritterDetector:
     def process_video(self, video_path: str, output_dir: str = None, 
                      create_highlight_clips: bool = False,
                      frame_interval: int = 5,
-                     save_timeline: bool = True):
+                     save_timeline: bool = True,
+                     verbose: bool = False):
         """Process a video, detect marine organisms and generate highlights.
         
         Args:
@@ -449,6 +451,7 @@ class CritterDetector:
             create_highlight_clips: Whether to extract highlight clips (default: False)
             frame_interval: Analyze every Nth frame (default: 5)
             save_timeline: Whether to save timeline visualization (default: True)
+            verbose: Whether to print detailed debug messages (default: False)
             
         Returns:
             VideoProcessingResult object containing detections and metadata
@@ -486,6 +489,13 @@ class CritterDetector:
         detections = []
         frame_number = 0
         
+        # Calculate how many frames we'll actually process
+        total_frames_to_process = frame_count // frame_interval + 1
+        
+        # Create progress bar
+        progress_bar = tqdm(total=total_frames_to_process, desc="Processing frames", unit="frame")
+        
+        detection_count = 0
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -498,27 +508,49 @@ class CritterDetector:
                 # Run detection on frame
                 frame_detections = self.detector.detect(pil_image)
                 
+                # Update progress bar
+                progress_bar.update(1)
+                progress_bar.set_postfix({"Detections": detection_count, "Current Time": f"{frame_number / fps:.2f}s"})
+                
                 # Convert to Detection objects and store
                 for det in frame_detections:
                     x1, y1, x2, y2 = [int(coord) for coord in det["box"]]
                     
+                    # Only print detailed debug info if verbose mode is enabled
+                    if verbose:
+                        print(f"DEBUG: Processing frame {frame_number}/{frame_count} at {frame_number / fps:.2f}s")
+                        print(f"DEBUG: Extracting patch with coordinates: {x1}, {y1}, {x2}, {y2}")
+                    
                     # Extract image patch
                     patch = frame[y1:y2, x1:x2].copy()
-                    patch_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
                     
-                    detections.append(Detection(
-                        frame_number=frame_number,
-                        timestamp=frame_number / fps,
-                        label=det["label"],
-                        confidence=det["score"],
-                        bbox=(x1, y1, x2, y2),
-                        image_patch=patch_pil
-                    ))
-                    
+                    # Add a check before converting color space
+                    if patch is not None and patch.size > 0 and patch.shape[0] > 0 and patch.shape[1] > 0:
+                        patch_pil = Image.fromarray(cv2.cvtColor(patch, cv2.COLOR_BGR2RGB))
+                        
+                        detections.append(Detection(
+                            frame_number=frame_number,
+                            timestamp=frame_number / fps,
+                            label=det["label"],
+                            confidence=det["score"],
+                            bbox=(x1, y1, x2, y2),
+                            image_patch=patch_pil
+                        ))
+                        detection_count += 1
+                    else:
+                        if verbose:
+                            print(f"WARNING: Empty patch at frame {frame_number}, timestamp {frame_number / fps:.2f}s. Skipping.")
+                        continue  # Skip this iteration and continue with the next frame/patch
+                
             frame_number += 1
                 
+        # Close progress bar
+        progress_bar.close()
+        
         # Release video
         cap.release()
+        
+        print(f"{Fore.GREEN}Processing complete. Found {detection_count} detections.{Style.RESET_ALL}")
         
         # Create result object
         result = VideoProcessingResult(
@@ -558,6 +590,11 @@ class CritterDetector:
         """
         create_timeline_visualization(result, output_path, width, height, 
                                    show_labels=self.show_labels)
+
+    @property
+    def threshold(self):
+        """Return score threshold for compatibility"""
+        return self.score_threshold
 
 
 # For backward compatibility
