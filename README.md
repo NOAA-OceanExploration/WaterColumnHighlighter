@@ -6,28 +6,27 @@ CritterDetector is an advanced deep learning framework designed to automate the 
 
 ## Features
 
-- **Automatic Highlight Detection:** Employs deep learning algorithms to automatically identify and extract highlight segments featuring marine organisms from underwater videos.
-- **DETR Integration by Default:** Utilizes the pretrained DETR model for object detection and feature extraction, capturing complex relationships within images without additional training.
-- **Temporal Dynamics Modeling:** Utilizes BiLSTM networks to capture temporal dependencies across video frames, enhancing the accuracy of highlight detection.
-- **Customizable Training:** Offers extensive configuration options for data augmentation, model parameters, and training settings to adapt to various underwater datasets.
-- **AWS Training Support:** Seamlessly switch between local and AWS EC2 training environments, with data loading from S3 when on AWS.
-- **Model Saving and Checkpointing:** Implements model checkpointing and early stopping to prevent overfitting and enable training resumption.
-- **Evaluation Tools:** Includes comprehensive evaluation scripts to assess temporal detection accuracy against ground truth annotations.
+Automatic Highlight Detection: Employs deep learning algorithms to automatically identify and extract highlight segments featuring marine organisms from underwater videos.
+Multiple Detection Models: Now supports several state-of-the-art detection models:
+OWL-ViT: Google's Open-vocabulary detector with specialized marine organism prompts
+YOLOv8: Ultralytics' fast and accurate object detection with multiple size options
+DETR: Facebook's Detection Transformer for object detection
+Ensemble Detection: Combines multiple models with customizable weights to leverage the strengths of each detector for improved accuracy
+Model Variant Selection: Choose between different model variants:
+OWL-ViT: base or large
+YOLOv8: nano, small, medium, large, or extra large
+DETR: resnet50, resnet101, or dc5
+Customizable Configuration: All detector options are configurable via TOML config file
+Temporal Dynamics Modeling: Utilizes BiLSTM networks to capture temporal dependencies across video frames, enhancing the accuracy of highlight detection.
+Model Saving and Checkpointing: Implements model checkpointing and early stopping to prevent overfitting and enable training resumption.
+Evaluation Tools: Includes comprehensive evaluation scripts to assess temporal detection accuracy against ground truth annotations.
 
-## Installation
-
-Before running CritterDetector, ensure you have the following prerequisites installed:
-
-- Python 3.6 or higher
-- PyTorch
-- torchvision
-- OpenCV (cv2)
-- NumPy
-- toml
-- wandb (Weights & Biases)
-- boto3 (for AWS S3 integration)
-
-You can install most of the required packages using pip:
+Installation
+To install all required dependencies including the new model options:
+```bash
+./install_owl.sh
+```
+This script will install dependencies for all supported models and cache them locally.
 
 ```bash
 pip install torch torchvision opencv-python numpy pandas scikit-learn transformers wandb toml tqdm matplotlib boto3
@@ -41,7 +40,7 @@ wandb login
 
 ## Configuration
 
-Adjust the `config.toml` file to specify paths and parameters:
+CritterDetector now uses an enhanced TOML configuration file with support for multiple detection models:
 
 ```toml
 [paths]
@@ -88,6 +87,21 @@ aws_region = "us-west-2"
 [evaluation]
 temporal_tolerance = 2.0  # Time window in seconds for matching detections
 min_confidence = 0.1     # Minimum confidence threshold for detections
+
+[detection]
+model = "owl"  # Options: "owl", "yolo", "detr"
+model_variant = "base"  # Options depend on model: 
+                       # - for owl: "base", "large"
+                       # - for yolo: "v8n", "v8s", "v8m", "v8l", "v8x"
+                       # - for detr: "resnet50", "resnet101", "dc5"
+score_threshold = 0.1  # Detection confidence threshold
+use_ensemble = true    # Whether to use ensemble detection with multiple models
+ensemble_weights = {"owl": 0.7, "yolo": 0.3}  # Relative weights for ensemble models
+
+[owl]
+max_num_boxes = 10    # Maximum number of boxes
+nms_thr = 0.5         # Non-Maximum Suppression threshold
+score_thr = 0.1       # Detection confidence threshold
 ```
 
 ## Usage
@@ -106,28 +120,17 @@ During training, the script saves checkpoints after each epoch. These checkpoint
 
 ## Evaluation
 
-CritterDetector includes an evaluation script to assess the temporal accuracy of detections against ground truth annotations. The evaluation focuses on temporal overlap between detected events and annotated events, rather than spatial accuracy or classification precision.
-
-### Configuration
-
-Configure evaluation parameters in `config.toml`:
-
-```toml
-[paths]
-evaluation_output_dir = "evaluation_results"  # Where to save evaluation results
-annotation_csv = "/path/to/annotations.csv"   # Path to ground truth annotations
-
-[evaluation]
-temporal_tolerance = 2.0  # Time window in seconds for matching detections
-min_confidence = 0.1     # Minimum confidence threshold for detections
-```
-
-### Running Evaluation
-
-To evaluate the detector's performance:
-
+The evaluation module has been updated to work with all detection models. Run evaluation with:
 ```bash
 python -m owl_highlighter.evaluate_detections
+```
+
+You can customize the evaluation behavior through the configuration file:
+
+```toml
+[evaluation]
+temporal_tolerance = 30.0  # Time window in seconds for matching detections
+simplified_mode = false      # Use single "organism" label instead of detailed categories
 ```
 
 The script will:
