@@ -11,11 +11,13 @@ Multiple Detection Models: Now supports several state-of-the-art detection model
 OWL-ViT: Google's Open-vocabulary detector with specialized marine organism prompts
 YOLOv8: Ultralytics' fast and accurate object detection with multiple size options
 DETR: Facebook's Detection Transformer for object detection
+CLIP: OpenAI's model used here as a patch classifier, leveraging another detector (YOLO or DETR) for initial bounding box proposals.
 Ensemble Detection: Combines multiple models with customizable weights to leverage the strengths of each detector for improved accuracy
 Model Variant Selection: Choose between different model variants:
 OWL-ViT: base or large
 YOLOv8: nano, small, medium, large, or extra large
 DETR: resnet50, resnet101, or dc5
+CLIP: Uses a configurable base detector (YOLO or DETR) with its own variants.
 Customizable Configuration: All detector options are configurable via TOML config file
 Temporal Dynamics Modeling: Utilizes BiLSTM networks to capture temporal dependencies across video frames, enhancing the accuracy of highlight detection.
 Model Saving and Checkpointing: Implements model checkpointing and early stopping to prevent overfitting and enable training resumption.
@@ -24,7 +26,7 @@ Evaluation Tools: Includes comprehensive evaluation scripts to assess temporal d
 Installation
 To install all required dependencies including the new model options:
 ```bash
-./install_owl.sh
+./install_models.sh
 ```
 This script will install dependencies for all supported models and cache them locally.
 
@@ -44,64 +46,81 @@ CritterDetector now uses an enhanced TOML configuration file with support for mu
 
 ```toml
 [paths]
-video_dir = "/path/to/videos"
-csv_dir = "/path/to/csvs"
-model_save_path = "/path/to/save/model"
-checkpoint_dir = "/path/to/checkpoints"
-dataset_cache_dir = "/path/to/dataset_cache"
-evaluation_output_dir = "evaluation_results"
-annotation_csv = "/path/to/annotations.csv"
-
-[data]
-frame_rate = 1  # Frames per second to sample from videos
+model_save_path = "WaterColumnHighlighter/models"
+dataset_cache_dir = "WaterColumnHighlighter/models"
+checkpoint_dir = "/media/patc/puck_of_destiny/critter_detector/checkpoints"
+video_dir = "/home/patc/data/Example_Dive/Compressed"
+csv_dir = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations"
+mode = "train"
+highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
+timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
+evaluation_output_dir = "/home/patc/data/Example_Dive/evaluation_results"
+annotation_csv = "/home/patc/data/Example_Dive/SeaTubeAnnotations_20230715T153000.000Z_20230716T020000.000Z/SeaTubeAnnotations_20230715T153000.000Z_20230716T020000.000Z.csv"
 
 [training]
+window_size = 20        # Number of frames in each input sequence for LSTM model
+stride = 1
 batch_size = 4
-num_epochs = 10
+num_epochs = 1
 learning_rate = 0.001
-window_size = 10  # Number of frames in each input sequence
-stride = 1  # Step size for the sliding window
-hidden_dim = 256
-num_layers = 2
 k_folds = 5
-early_stopping_patience = 3
+early_stopping_patience = 10
 gradient_clip = 1.0
 checkpoint_steps = 1000
+scheduler_factor = 0.5
+scheduler_patience = 5
+optimizer = "Adam"     # Options: "Adam", "SGD", etc.
+loss_function = "FocalLoss"  # Options: "FocalLoss", "CrossEntropy", etc.
+mixed_precision = true  # New setting
+
+[data]
+frame_rate = 29        # Frames per second to sample from videos
 
 [augmentation]
-random_crop_size = 224
-color_jitter_brightness = 0.2
-color_jitter_contrast = 0.2
-color_jitter_saturation = 0.2
+random_crop_size = 200
+color_jitter_brightness = 0.1
+color_jitter_contrast = 0.1
+color_jitter_saturation = 0.1
 color_jitter_hue = 0.1
 
 [logging]
+wandb_project = "critter_detector"
+wandb_entity = "patrickallencooper"
 log_interval = 10
 
-[aws]
-use_aws = false  # Set to true to enable AWS training
-s3_bucket_name = "your-s3-bucket-name"
-s3_data_prefix = "data/"
-aws_region = "us-west-2"
-
-[evaluation]
-temporal_tolerance = 2.0  # Time window in seconds for matching detections
-min_confidence = 0.1     # Minimum confidence threshold for detections
+[model]
+model_type = "lstm"    # Options: "lstm" or "detr"
+feature_extractor = "resnet"  # Options for LSTM model: "resnet" or "detr"
+fine_tune = false      # Whether to fine-tune the feature extractor or DETR model
+hidden_dim = 32        # Hidden dimension size for LSTM
+num_layers = 5         # Number of layers for LSTM
 
 [detection]
-model = "owl"  # Options: "owl", "yolo", "detr"
-model_variant = "base"  # Options depend on model: 
-                       # - for owl: "base", "large"
-                       # - for yolo: "v8n", "v8s", "v8m", "v8l", "v8x"
-                       # - for detr: "resnet50", "resnet101", "dc5"
+model = "owl"  # Options: "owl", "yolo", "detr", "clip"
+model_variant = "base"  # Options depend on model: for owl: "base", "large"; for yolo: "v8n", "v8s", "v8m", "v8l", "v8x"
 score_threshold = 0.1  # Detection confidence threshold
 use_ensemble = true    # Whether to use ensemble detection with multiple models
-ensemble_weights = {"owl": 0.7, "yolo": 0.3}  # Relative weights for ensemble models
+ensemble_weights = {"owl": 0.6, "clip": 0.4}  # Relative weights for ensemble models
+
+[clip]
+base_detector = "yolo"             # Which detector to use for proposals ("yolo" or "detr")
+base_detector_variant = "v8n"      # Variant for the base detector (e.g., "v8n", "resnet50")
+base_detector_threshold = 0.05   # Confidence threshold for base detector proposals
 
 [owl]
 max_num_boxes = 10    # Maximum number of boxes
 nms_thr = 0.5         # Non-Maximum Suppression threshold
 score_thr = 0.1       # Detection confidence threshold
+
+[aws]
+use_aws = false       # Set to true to enable AWS training
+s3_bucket_name = "your-s3-bucket-name"
+s3_data_prefix = "data/"
+aws_region = "us-west-2"
+
+[evaluation]
+temporal_tolerance = 30.0  # Time window in seconds for matching detections
+simplified_mode = false      # Use single "organism" label instead of detailed categories
 ```
 
 ## Usage

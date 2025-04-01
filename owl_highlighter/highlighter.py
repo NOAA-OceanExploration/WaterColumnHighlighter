@@ -4,6 +4,7 @@ from PIL import Image
 import torch
 from transformers import Owlv2Processor, Owlv2ForObjectDetection
 from transformers import DetrImageProcessor, DetrForObjectDetection
+from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
 from typing import List, Optional, Dict, Tuple, Union
 from .models import Detection, VideoProcessingResult
@@ -344,6 +345,159 @@ class EnsembleDetector(BaseDetector):
         union_area = box1_area + box2_area - intersection_area
         return intersection_area / union_area if union_area > 0 else 0.0
 
+class ClipDetector(BaseDetector):
+    """
+    CLIP-based detector that uses a base detector for proposals
+    and CLIP for classifying patches within those proposals.
+    """
+    # Reuse ocean classes from OwlDetector
+    OCEAN_CLASSES = OwlDetector.OCEAN_CLASSES
+
+    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False,
+                 base_detector_type: str = "yolo",
+                 base_detector_variant: str = "v8n",
+                 base_detector_threshold: float = 0.05):
+        """
+        Initializes the ClipDetector.
+
+        Args:
+            threshold (float): Confidence threshold for CLIP classification.
+            simplified_mode (bool): Whether to use simplified classes for CLIP.
+            base_detector_type (str): Which detector to use for box proposals ('yolo' or 'detr').
+            base_detector_variant (str): Variant for the base detector.
+            base_detector_threshold (float): Confidence threshold for the base detector proposals.
+        """
+        super().__init__(threshold)
+        self.simplified_mode = simplified_mode
+        self.base_detector_threshold = base_detector_threshold
+
+        print(f"Initializing CLIP Detector with base: {base_detector_type} ({base_detector_variant})")
+
+        # Initialize base detector for proposals
+        if base_detector_type == "yolo":
+            self.base_detector = YoloDetector(threshold=self.base_detector_threshold, variant=base_detector_variant)
+            print(f"  Base YOLO detector initialized with threshold {self.base_detector_threshold}")
+        elif base_detector_type == "detr":
+            self.base_detector = DetrDetector(threshold=self.base_detector_threshold, variant=base_detector_variant)
+            print(f"  Base DETR detector initialized with threshold {self.base_detector_threshold}")
+        else:
+            raise ValueError(f"Unsupported base_detector_type for ClipDetector: {base_detector_type}")
+
+        # Initialize CLIP model and processor
+        clip_model_name = "openai/clip-vit-large-patch14"
+        print(f"Loading CLIP model: {clip_model_name}")
+        self.clip_processor = CLIPProcessor.from_pretrained(clip_model_name)
+        self.clip_model = CLIPModel.from_pretrained(clip_model_name)
+
+        if torch.cuda.is_available():
+            self.clip_model = self.clip_model.cuda()
+        self.clip_model.eval()
+        print("CLIP model loaded.")
+
+        # Prepare text prompts for CLIP
+        if self.simplified_mode:
+            self.clip_texts = ["an organism", "an ocean animal", "marine life", "underwater creature", "something non-biological", "water"]
+        else:
+            # Flatten the OCEAN_CLASSES structure for CLIP prompts
+            self.clip_texts = [
+                name.strip()
+                for class_string in self.OCEAN_CLASSES
+                for name in class_string.split(", ")
+                if name.strip()
+            ]
+            # Add some negative prompts
+            self.clip_texts.extend(["empty water", "seafloor", "rov equipment", "laser dots"])
+
+        print(f"Prepared {len(self.clip_texts)} text prompts for CLIP.")
+
+
+    @torch.no_grad()
+    def detect(self, image: Image.Image) -> List[Dict]:
+        """
+        Run detection: Base detector proposes boxes, CLIP classifies patches.
+        """
+        # 1. Get proposals from the base detector
+        # print(f"Running base detector ({type(self.base_detector).__name__}) for proposals...")
+        proposals = self.base_detector.detect(image)
+        # print(f"  Base detector proposed {len(proposals)} boxes.")
+
+        if not proposals:
+            return []
+
+        final_detections = []
+        img_array = np.array(image)
+
+        # 2. Classify patches using CLIP
+        for proposal in proposals:
+            box = [int(coord) for coord in proposal["box"]]
+            x1, y1, x2, y2 = box
+
+            # Ensure box coordinates are valid
+            h, w, _ = img_array.shape
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(w, x2)
+            y2 = min(h, y2)
+
+            if x1 >= x2 or y1 >= y2:
+                # print(f"  Skipping invalid proposal box: {box}")
+                continue
+
+            # Extract patch
+            patch = img_array[y1:y2, x1:x2]
+            if patch.size == 0:
+                # print(f"  Skipping empty patch for box: {box}")
+                continue
+
+            try:
+                patch_pil = Image.fromarray(patch)
+            except Exception as e:
+                print(f"  Error converting patch to PIL Image for box {box}: {e}")
+                continue
+
+            # Prepare CLIP inputs
+            try:
+                inputs = self.clip_processor(
+                    text=self.clip_texts,
+                    images=patch_pil,
+                    return_tensors="pt",
+                    padding=True
+                )
+                if torch.cuda.is_available():
+                    inputs = {k: v.cuda() for k, v in inputs.items()}
+            except Exception as e:
+                print(f"  Error processing patch with CLIP processor for box {box}: {e}")
+                continue
+
+
+            # Run CLIP inference
+            try:
+                outputs = self.clip_model(**inputs)
+                logits_per_image = outputs.logits_per_image # image-text similarity score
+                probs = logits_per_image.softmax(dim=1) # label probabilities
+                best_prob, best_idx = probs[0].max(dim=0)
+                best_label = self.clip_texts[best_idx.item()]
+                score = best_prob.item()
+            except Exception as e:
+                print(f"  Error during CLIP model inference for box {box}: {e}")
+                continue
+
+
+            # Filter based on CLIP confidence and relevant labels
+            # Define simple negative labels
+            negative_labels = {"empty water", "seafloor", "rov equipment", "laser dots"}
+            if score > self.threshold and best_label not in negative_labels:
+                # print(f"  CLIP Confidence: {score:.3f}, Label: '{best_label}' for box {box} (Orig Score: {proposal['score']:.3f})")
+                final_detections.append({
+                    "label": best_label,
+                    "score": score, # Use CLIP score
+                    "box": proposal["box"] # Keep original box
+                })
+            # else:
+                # print(f"  CLIP Rejected: Confidence {score:.3f} <= {self.threshold} or Negative Label '{best_label}' for box {box}")
+
+        # print(f"CLIP detector returning {len(final_detections)} final detections.")
+        return final_detections
 
 class CritterDetector:
     """Multi-model detector for marine organisms"""
@@ -381,62 +535,93 @@ class CritterDetector:
         # Extract detection configuration
         detection_config = config['detection']
         self.model_type = detection_config['model']
-        self.model_variant = detection_config['model_variant']
+        self.model_variant = detection_config.get('model_variant', None) # Variant might not apply to CLIP itself
         self.score_threshold = detection_config['score_threshold']
         self.use_ensemble = detection_config.get('use_ensemble', False)
-        
+
+        # Simplified mode from evaluation config for consistency
+        self.simplified_mode = config['evaluation'].get('simplified_mode', False)
+
         # Initialize detector based on configuration
         if self.use_ensemble:
             # For ensemble detection, prepare all detectors according to weights
-            ensemble_weights = detection_config.get('ensemble_weights', 
+            ensemble_weights = detection_config.get('ensemble_weights',
                                                    {"owl": 0.7, "yolo": 0.3})
             detectors = {}
-            
+
             for model_name, weight in ensemble_weights.items():
                 if model_name == "owl":
                     detector = OwlDetector(
                         threshold=self.score_threshold,
-                        simplified_mode=config['evaluation'].get('simplified_mode', False),
-                        variant=self.model_variant if self.model_type == "owl" else "base"
+                        simplified_mode=self.simplified_mode,
+                        # Use owl variant if specified, else default
+                        variant=detection_config.get('model_variant') if self.model_type == "owl" else "base"
                     )
                 elif model_name == "yolo":
                     detector = YoloDetector(
                         threshold=self.score_threshold,
-                        variant=self.model_variant if self.model_type == "yolo" else "v8n"
+                        # Use yolo variant if specified, else default
+                        variant=detection_config.get('model_variant') if self.model_type == "yolo" else "v8n"
                     )
                 elif model_name == "detr":
                     detector = DetrDetector(
                         threshold=self.score_threshold,
-                        variant=self.model_variant if self.model_type == "detr" else "resnet50"
+                        # Use detr variant if specified, else default
+                        variant=detection_config.get('model_variant') if self.model_type == "detr" else "resnet50"
+                    )
+                elif model_name == "clip":
+                    # Get CLIP specific config
+                    clip_config = config.get('clip', {})
+                    detector = ClipDetector(
+                        threshold=self.score_threshold,
+                        simplified_mode=self.simplified_mode,
+                        base_detector_type=clip_config.get('base_detector', 'yolo'),
+                        base_detector_variant=clip_config.get('base_detector_variant', 'v8n'),
+                        base_detector_threshold=clip_config.get('base_detector_threshold', 0.05)
                     )
                 else:
-                    print(f"Warning: Unknown model type '{model_name}', skipping")
+                    print(f"Warning: Unknown model type '{model_name}' in ensemble, skipping")
                     continue
-                    
+
                 detectors[model_name] = (detector, weight)
-                
+
+            if not detectors:
+                 raise ValueError("No valid detectors specified for the ensemble.")
             self.detector = EnsembleDetector(detectors)
-            
+            print(f"Initialized Ensemble Detector with: {list(detectors.keys())}")
+
         else:
             # For single-model detection
+            print(f"Initializing single model detector: {self.model_type}")
             if self.model_type == "owl":
                 self.detector = OwlDetector(
                     threshold=self.score_threshold,
-                    simplified_mode=config['evaluation'].get('simplified_mode', False),
-                    variant=self.model_variant
+                    simplified_mode=self.simplified_mode,
+                    variant=self.model_variant if self.model_variant else "base"
                 )
             elif self.model_type == "yolo":
                 self.detector = YoloDetector(
                     threshold=self.score_threshold,
-                    variant=self.model_variant
+                    variant=self.model_variant if self.model_variant else "v8n"
                 )
             elif self.model_type == "detr":
                 self.detector = DetrDetector(
                     threshold=self.score_threshold,
-                    variant=self.model_variant
+                    variant=self.model_variant if self.model_variant else "resnet50"
+                )
+            elif self.model_type == "clip":
+                 # Get CLIP specific config
+                clip_config = config.get('clip', {})
+                self.detector = ClipDetector(
+                    threshold=self.score_threshold,
+                    simplified_mode=self.simplified_mode,
+                    base_detector_type=clip_config.get('base_detector', 'yolo'),
+                    base_detector_variant=clip_config.get('base_detector_variant', 'v8n'),
+                    base_detector_threshold=clip_config.get('base_detector_threshold', 0.05)
                 )
             else:
-                raise ValueError(f"Unsupported model type: {self.model_type}")
+                raise ValueError(f"Unsupported single model type: {self.model_type}")
+            print(f"Initialized {type(self.detector).__name__}")
     
     def process_video(self, video_path: str, output_dir: str = None, 
                      create_highlight_clips: bool = False,

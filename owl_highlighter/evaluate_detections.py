@@ -36,16 +36,69 @@ class DetectionEvaluator:
         print(f"Loading annotations from: {csv_path}")
         df = pd.read_csv(csv_path)
         
+        # Print all column names for debugging
+        print("\nAvailable columns in CSV:")
+        for col in df.columns:
+            print(f"  - '{col}'")
+        
+        # Map column names to expected names (case-insensitive)
+        column_mapping = {}
+        expected_columns = ['Dive ID', 'Start Date', 'Comment', 'Taxonomy', 'Taxon', 'Taxon Path']
+        
+        for expected_col in expected_columns:
+            # Try exact match first
+            if expected_col in df.columns:
+                continue
+            
+            # Try case-insensitive match
+            matches = [col for col in df.columns if col.lower() == expected_col.lower()]
+            if matches:
+                column_mapping[matches[0]] = expected_col
+                print(f"Mapping column '{matches[0]}' to '{expected_col}'")
+                continue
+            
+            # Try partial match
+            key_part = expected_col.split()[0].lower()  # e.g., 'taxon' from 'Taxon Path'
+            matches = [col for col in df.columns if key_part in col.lower()]
+            if matches:
+                column_mapping[matches[0]] = expected_col
+                print(f"Mapping column '{matches[0]}' to '{expected_col}'")
+                continue
+            
+            print(f"WARNING: Could not find a match for expected column '{expected_col}'")
+        
+        # Rename columns if needed
+        if column_mapping:
+            print("\nRenaming columns to match expected format...")
+            df = df.rename(columns=column_mapping)
+        
         # Print some sample rows to understand the data better
-        print("\nFirst few rows of annotations:")
-        print(df[['Dive ID', 'Start Date', 'Comment', 'Taxonomy', 'Taxon', 'Taxon Path']].head(10).to_string())
+        print("\nFirst few rows of annotations after column mapping:")
+        print(df[['Dive ID', 'Start Date', 'Comment']].head(10).to_string())
+        
+        # Try to access taxonomy columns with error handling
+        taxonomy_cols = ['Taxonomy', 'Taxon', 'Taxon Path']
+        for col in taxonomy_cols:
+            if col in df.columns:
+                print(f"\nSample values for '{col}':")
+                sample_values = df[col].dropna().head(5).tolist()
+                print(sample_values if sample_values else "No non-null values found")
+            else:
+                print(f"\nWARNING: Column '{col}' not found in dataframe")
         
         # Convert 'Start Date' to datetime and ensure UTC timezone
         df['Start Date'] = pd.to_datetime(df['Start Date']).dt.tz_localize(None)
         
         # Map numeric dive ID to EX format if needed
-        dive_mapping = {'2853': 'EX2304'}  # Add more mappings as needed
-        df['Formatted Dive ID'] = df['Dive ID'].astype(str).map(dive_mapping)
+        dive_mapping = {
+            '2853': 'EX2304',
+            '2673': 'EX2206'  # Added mapping for dive ID 2673
+        }  
+        print(f"\nDive ID mapping: {dive_mapping}")
+        
+        # Apply mapping with fallback to original ID if no mapping exists
+        df['Formatted Dive ID'] = df['Dive ID'].astype(str).map(lambda x: dive_mapping.get(x, x))
+        print(f"Unique Formatted Dive IDs: {df['Formatted Dive ID'].unique().tolist()}")
         
         # Define terms to exclude for operational annotations
         operational_terms = [
@@ -97,34 +150,40 @@ class DetectionEvaluator:
             print(f"\nProcessing Dive ID: {dive_id}")
             print(f"Total annotations for this dive: {len(group)}")
             
-            # Look for organisms in comments and taxonomy fields (positive match)
-            organism_pattern = 'fish|shark|squid|jellyfish|cephalopod'
-            organism_annotations = group[
-                (group['Comment'].str.contains(organism_pattern, case=False, na=False)) |
-                (group['Taxonomy'].str.contains(organism_pattern, case=False, na=False)) |
-                (group['Taxon Path'].str.contains(organism_pattern, case=False, na=False))
-            ]
+            # Check if we should skip the organism filtering step
+            skip_organism_filter = self.config['evaluation'].get('skip_organism_filter', False)
             
-            print(f"Annotations with organism terms: {len(organism_annotations)}")
+            if skip_organism_filter:
+                # Skip organism filtering, use all annotations
+                filtered_annotations = group
+            else:
+                # Look for organisms in comments and taxonomy fields (positive match)
+                organism_pattern = 'fish|shark|squid|jellyfish|cephalopod'
+                filtered_annotations = group[
+                    (group['Comment'].str.contains(organism_pattern, case=False, na=False)) |
+                    (group['Taxonomy'].str.contains(organism_pattern, case=False, na=False)) |
+                    (group['Taxon Path'].str.contains(organism_pattern, case=False, na=False))
+                ]
+                print(f"Annotations with organism terms: {len(filtered_annotations)}")
             
             # Filter out operational annotations (negative filter)
             operational_pattern = '|'.join(operational_terms)
-            operational_mask = organism_annotations['Comment'].str.contains(
+            operational_mask = filtered_annotations['Comment'].str.contains(
                 operational_pattern, case=False, na=False)
             
             # Count how many are being filtered out
             filtered_out_count = operational_mask.sum()
             print(f"Annotations filtered out due to operational terms: {filtered_out_count}")
             
-            organism_annotations = organism_annotations[~operational_mask]
-            print(f"Final organism annotations after filtering: {len(organism_annotations)}")
+            filtered_annotations = filtered_annotations[~operational_mask]
+            print(f"Final organism annotations after filtering: {len(filtered_annotations)}")
             
-            if not organism_annotations.empty:
-                annotations[str(dive_id)] = organism_annotations['Start Date'].tolist()
+            if not filtered_annotations.empty:
+                annotations[str(dive_id)] = filtered_annotations['Start Date'].tolist()
                 
                 # Print first few kept annotations
                 print("\nSample kept annotations:")
-                sample = organism_annotations.head(3)
+                sample = filtered_annotations.head(3)
                 if not sample.empty:
                     print(sample[['Start Date', 'Comment', 'Taxonomy', 'Taxon Path']].to_string())
                 else:
