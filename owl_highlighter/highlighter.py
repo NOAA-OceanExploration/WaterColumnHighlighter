@@ -6,6 +6,7 @@ from transformers import Owlv2Processor, Owlv2ForObjectDetection
 from transformers import DetrImageProcessor, DetrForObjectDetection
 from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 from typing import List, Optional, Dict, Tuple, Union
 from .models import Detection, VideoProcessingResult
 from .visualization import create_timeline_visualization
@@ -141,8 +142,9 @@ class OwlDetector(BaseDetector):
 
 class YoloDetector(BaseDetector):
     """YOLOv8 detector"""
-    def __init__(self, threshold: float = 0.1, variant: str = "v8n"):
+    def __init__(self, threshold: float = 0.1, variant: str = "v8n", verbose: bool = True):
         super().__init__(threshold)
+        self.verbose = verbose # Store verbose flag
         
         # Map variant to model name
         variant_map = {
@@ -172,11 +174,10 @@ class YoloDetector(BaseDetector):
         
     def detect(self, image: Image.Image) -> List[Dict]:
         """Run detection on an image using YOLOv8"""
-        # Convert PIL image to format YOLOv8 expects
         img_array = np.array(image)
         
-        # Run inference
-        results = self.model(img_array, conf=self.threshold)
+        # Pass verbose flag to the model call
+        results = self.model(img_array, conf=self.threshold, verbose=self.verbose)
         
         detections = []
         for result in results:
@@ -199,62 +200,71 @@ class YoloDetector(BaseDetector):
         return detections
 
 class DetrDetector(BaseDetector):
-    """Facebook DETR (Detection Transformer) detector"""
-    def __init__(self, threshold: float = 0.1, variant: str = "resnet50"):
+    """
+    Facebook DETR (Detection Transformer) detector.
+    Note: This detector uses models pre-trained on COCO and will output
+    general object labels (e.g., 'person', 'boat') rather than specific
+    marine organism labels like the OWL or CLIP detectors.
+    """
+    def __init__(self, threshold: float = 0.1, variant: str = "resnet50", verbose: bool = True):
         super().__init__(threshold)
-        
+        self.verbose = verbose # Store verbose flag
+
         # Map variant to model name
         variant_map = {
             "resnet50": "facebook/detr-resnet-50",
             "resnet101": "facebook/detr-resnet-101",
             "dc5": "facebook/detr-resnet-50-dc5",
         }
-        
+
         model_name = variant_map.get(variant, "facebook/detr-resnet-50")
-        self.processor = DetrImageProcessor.from_pretrained(model_name)
-        self.model = DetrForObjectDetection.from_pretrained(model_name)
-        
+        # Ensure 'no_timm' revision is used if needed, check transformers version compatibility
+        try:
+            # Try loading with revision='no_timm' first
+            self.processor = DetrImageProcessor.from_pretrained(model_name, revision="no_timm")
+            self.model = DetrForObjectDetection.from_pretrained(model_name, revision="no_timm")
+            print(f"Loaded DETR model {model_name} with revision='no_timm'")
+        except EnvironmentError:
+            # Fallback to default if 'no_timm' revision doesn't exist or causes issues
+            print(f"Warning: Could not load DETR model {model_name} with revision='no_timm'. Falling back to default.")
+            self.processor = DetrImageProcessor.from_pretrained(model_name)
+            self.model = DetrForObjectDetection.from_pretrained(model_name)
+
+
         if torch.cuda.is_available():
             self.model = self.model.cuda()
         self.model.eval()
-        
-        # COCO classes that might be relevant for marine organisms
-        self.marine_classes = {
-            1: "person",   # For divers
-            21: "elephant",  # For comparison to large marine mammals
-            23: "bear",    # For comparison to large marine mammals
-            # Marine-relevant COCO classes
-            # Add more relevant mappings as needed
-        }
-        
+
+        # No marine_classes filtering applied for standard DETR
+
+
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image using DETR"""
+        """Run detection on an image using DETR, returning all COCO objects above threshold."""
         inputs = self.processor(images=image, return_tensors="pt")
-        
+
         if torch.cuda.is_available():
             inputs = {k: v.cuda() for k, v in inputs.items()}
-            
+
         with torch.no_grad():
             outputs = self.model(**inputs)
-            
-        # Convert outputs to COCO API
+
+        # Convert outputs to COCO API format
         target_sizes = torch.tensor([image.size[::-1]])
         results = self.processor.post_process_object_detection(
             outputs, target_sizes=target_sizes, threshold=self.threshold
-        )[0]
-        
+        )[0] # index [0] to get results for the first (and only) image
+
         detections = []
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-            cls_name = self.model.config.id2label[label.item()]
-            
-            # We could filter for marine-relevant classes
-            # if label.item() in self.marine_classes:
-            detections.append({
-                "label": cls_name,
-                "score": score.item(), 
-                "box": box.tolist()
-            })
-            
+            # Check score against threshold again (post_process might have its own logic)
+            if score.item() > self.threshold:
+                cls_name = self.model.config.id2label[label.item()]
+                detections.append({
+                    "label": cls_name,       # Use the COCO label name
+                    "score": score.item(),
+                    "box": box.tolist()
+                })
+
         return detections
 
 class EnsembleDetector(BaseDetector):
@@ -373,12 +383,20 @@ class ClipDetector(BaseDetector):
 
         print(f"Initializing CLIP Detector with base: {base_detector_type} ({base_detector_variant})")
 
-        # Initialize base detector for proposals
+        # Initialize base detector for proposals with verbose=False
         if base_detector_type == "yolo":
-            self.base_detector = YoloDetector(threshold=self.base_detector_threshold, variant=base_detector_variant)
+            self.base_detector = YoloDetector(
+                threshold=self.base_detector_threshold,
+                variant=base_detector_variant,
+                verbose=False # Pass verbose=False
+            )
             print(f"  Base YOLO detector initialized with threshold {self.base_detector_threshold}")
         elif base_detector_type == "detr":
-            self.base_detector = DetrDetector(threshold=self.base_detector_threshold, variant=base_detector_variant)
+            self.base_detector = DetrDetector(
+                threshold=self.base_detector_threshold,
+                variant=base_detector_variant,
+                verbose=False # Pass verbose=False
+            )
             print(f"  Base DETR detector initialized with threshold {self.base_detector_threshold}")
         else:
             raise ValueError(f"Unsupported base_detector_type for ClipDetector: {base_detector_type}")
@@ -499,6 +517,240 @@ class ClipDetector(BaseDetector):
         # print(f"CLIP detector returning {len(final_detections)} final detections.")
         return final_detections
 
+class GroundingDinoDetector(BaseDetector):
+    """
+    Grounding DINO detector (e.g., IDEA-Research/grounding-dino-base).
+    Uses text prompts (classes separated by '.') for zero-shot detection.
+    """
+    # Reuse ocean classes from OwlDetector
+    OCEAN_CLASSES = OwlDetector.OCEAN_CLASSES
+
+    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base"):
+        super().__init__(threshold)
+        self.simplified_mode = simplified_mode # Store simplified_mode
+
+        # Map variant to model name
+        variant_map = {
+            "tiny": "IDEA-Research/grounding-dino-tiny",
+            "base": "IDEA-Research/grounding-dino-base",
+            "small": "IDEA-Research/grounding-dino-small",
+            "medium": "IDEA-Research/grounding-dino-medium",
+            # Add large if needed, check Hugging Face for exact name
+            # "large": "IDEA-Research/grounding-dino-large",
+        }
+        model_id = variant_map.get(variant, "IDEA-Research/grounding-dino-base")
+
+        print(f"Initializing GroundingDINO Detector ({model_id})")
+
+        self.processor = AutoProcessor.from_pretrained(model_id)
+        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id)
+
+        if torch.cuda.is_available():
+            self.model = self.model.cuda()
+        self.model.eval()
+        print("GroundingDINO model loaded.")
+
+        # Prepare text prompts LIST
+        if simplified_mode:
+            self.prompt_texts = ["organism", "ocean animal", "marine life", "underwater creature"]
+        else:
+            # Flatten the OCEAN_CLASSES structure into a list
+            self.prompt_texts = [
+                name.strip()
+                for class_string in self.OCEAN_CLASSES
+                for name in class_string.split(", ")
+                if name.strip()
+            ]
+        print(f"Initialized GroundingDINO with {len(self.prompt_texts)} potential classes.")
+
+
+    @torch.no_grad()
+    def detect(self, image: Image.Image) -> List[Dict]:
+        """Run detection on an image using Grounding DINO, processing classes in batches."""
+        all_detections = []
+        # Determine batch size for classes based on mode
+        class_batch_size = 50 if not self.simplified_mode else len(self.prompt_texts) # Process all if simplified
+
+        for i in range(0, len(self.prompt_texts), class_batch_size):
+            batch_texts = self.prompt_texts[i : i + class_batch_size]
+            # Create prompt for the current batch
+            batch_prompt = " . ".join(batch_texts) + " ."
+
+            # print(f"DEBUG: Processing class batch {i // class_batch_size + 1}, prompt: {batch_prompt[:100]}...")
+
+            inputs = self.processor(images=image, text=batch_prompt, return_tensors="pt")
+            if torch.cuda.is_available():
+                inputs = {k: v.cuda() for k, v in inputs.items()}
+
+            try:
+                outputs = self.model(**inputs)
+            except RuntimeError as e:
+                 print(f"RuntimeError during GroundingDINO forward pass: {e}")
+                 print(f"Prompt that caused error: {batch_prompt}")
+                 # Skip this batch if error occurs
+                 continue
+
+            # Post-process for this batch
+            results = self.processor.post_process_grounded_object_detection(
+                outputs,
+                input_ids=inputs["input_ids"], # Pass input_ids as required by this method
+                box_threshold=self.threshold, # Use box_threshold argument
+                target_sizes=[image.size[::-1]]
+            )[0] # index [0] for the first image
+
+            for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+                # The label returned by the processor is the text prompt matched
+                 all_detections.append({
+                    "label": label,
+                    "score": score.item(),
+                    "box": box.tolist()
+                })
+
+        # Apply Non-Maximum Suppression (NMS) to the combined results
+        final_detections = self._apply_nms(all_detections)
+
+        return final_detections
+
+    def _apply_nms(self, detections: List[Dict], iou_threshold: float = 0.45) -> List[Dict]:
+        """Apply Non-Maximum Suppression to filter overlapping boxes."""
+        if not detections:
+            return []
+
+        # Sort by score descending
+        detections.sort(key=lambda x: x["score"], reverse=True)
+
+        final_detections = []
+        while detections:
+            best = detections.pop(0)
+            final_detections.append(best)
+
+            box1 = best["box"]
+            i = 0
+            while i < len(detections):
+                box2 = detections[i]["box"]
+                 # Use the existing IoU calculation method (needs access or reimplementation)
+                 # For simplicity, let's borrow the logic directly here
+                if self._calculate_iou(box1, box2) > iou_threshold:
+                    detections.pop(i)
+                else:
+                    i += 1
+        return final_detections
+
+    # Helper function for IoU calculation (copied from EnsembleDetector for standalone use)
+    def _calculate_iou(self, box1, box2):
+        """Calculate Intersection over Union (IoU) between two bounding boxes"""
+        # Expecting [x1, y1, x2, y2] format
+        box1_x1, box1_y1, box1_x2, box1_y2 = box1
+        box2_x1, box2_y1, box2_x2, box2_y2 = box2
+
+        # Calculate area of boxes
+        box1_area = (box1_x2 - box1_x1) * (box1_y2 - box1_y1)
+        box2_area = (box2_x2 - box2_x1) * (box2_y2 - box2_y1)
+
+        # Calculate area of intersection
+        x_left = max(box1_x1, box2_x1)
+        y_top = max(box1_y1, box2_y1)
+        x_right = min(box1_x2, box2_x2)
+        y_bottom = min(box1_y2, box2_y2)
+
+        # No intersection
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        if intersection_area < 0: intersection_area = 0 # Ensure non-negative area
+
+        # Calculate IoU
+        union_area = box1_area + box2_area - intersection_area
+        return intersection_area / union_area if union_area > 0 else 0.0
+
+class YoloWorldDetector(BaseDetector):
+    """
+    YOLO-World detector for zero-shot object detection using text prompts.
+    """
+    # Reuse ocean classes from OwlDetector
+    OCEAN_CLASSES = OwlDetector.OCEAN_CLASSES
+
+    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "l"):
+        """
+        Initializes the YoloWorldDetector.
+
+        Args:
+            threshold (float): Confidence threshold for detection.
+            simplified_mode (bool): Whether to use simplified classes.
+            variant (str): Model variant (e.g., "v2-s", "v2-m", "v2-l", "v2-x"). Default is "l".
+        """
+        super().__init__(threshold)
+
+        # Map variant to model name (check ultralytics docs/releases for exact names)
+        # Align this map with the models downloaded in install_models.sh
+        variant_map = {
+            "s": "yolov8s-worldv2.pt", # Use V2 as default small
+            "m": "yolov8m-worldv2.pt", # Use V2 as default medium
+            "l": "yolov8l-worldv2.pt", # Use V2 as default large
+            "x": "yolov8x-worldv2.pt", # Use V2 as default extra-large
+            # Keep specific V2 identifiers if needed
+            "v2-s": "yolov8s-worldv2.pt",
+            "v2-m": "yolov8m-worldv2.pt",
+            "v2-l": "yolov8l-worldv2.pt",
+            "v2-x": "yolov8x-worldv2.pt",
+            # Add original identifiers if you explicitly download them too
+            # "orig-s": "yolo-world/s.pt",
+            # "orig-m": "yolo-world/m.pt",
+            # "orig-l": "yolo-world/l.pt",
+            # "orig-x": "yolo-world/x.pt",
+        }
+        # Default to V2 large if variant not found or is ambiguous
+        model_name = variant_map.get(variant, "yolov8l-worldv2.pt")
+
+        print(f"Initializing YOLO-World Detector ({model_name})")
+        self.model = YOLO(model_name)
+        print("YOLO-World model loaded.")
+
+        # Prepare text prompts list
+        if simplified_mode:
+            self.prompt_texts = ["organism", "ocean animal", "marine life", "underwater creature"]
+        else:
+            # Flatten the OCEAN_CLASSES structure into a list
+            self.prompt_texts = [
+                name.strip()
+                for class_string in self.OCEAN_CLASSES
+                for name in class_string.split(", ")
+                if name.strip()
+            ]
+        print(f"Prepared {len(self.prompt_texts)} classes for YOLO-World prompt.")
+
+        # Set the model's classes using the prompt texts
+        # This tells YOLO-World what to look for
+        self.model.set_classes(self.prompt_texts)
+
+    def detect(self, image: Image.Image) -> List[Dict]:
+        """Run detection on an image using YOLO-World."""
+        img_array = np.array(image)
+
+        # Run inference with the specified confidence threshold
+        # Note: YOLO-World uses the standard YOLO call signature
+        results = self.model(img_array, conf=self.threshold, verbose=False) # verbose=False to suppress internal logs
+
+        detections = []
+        # Process results (assuming standard YOLO results format)
+        for result in results:
+            boxes = result.boxes
+            names = result.names # Get class names map {index: 'name'}
+            for box in boxes:
+                class_index = int(box.cls.item())
+                class_name = names[class_index] # Get the actual class name detected
+                confidence = box.conf.item()
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+
+                detections.append({
+                    "label": class_name, # Use the detected class name
+                    "score": confidence,
+                    "box": [x1, y1, x2, y2]
+                })
+
+        return detections
+
 class CritterDetector:
     """Multi-model detector for marine organisms"""
     def __init__(self, config_path=None, config=None, show_labels: bool = True):
@@ -535,7 +787,7 @@ class CritterDetector:
         # Extract detection configuration
         detection_config = config['detection']
         self.model_type = detection_config['model']
-        self.model_variant = detection_config.get('model_variant', None) # Variant might not apply to CLIP itself
+        self.model_variant = detection_config.get('model_variant', None)
         self.score_threshold = detection_config['score_threshold']
         self.use_ensemble = detection_config.get('use_ensemble', False)
 
@@ -550,27 +802,28 @@ class CritterDetector:
             detectors = {}
 
             for model_name, weight in ensemble_weights.items():
+                # Determine variant for the specific model being added
+                # Use the top-level model_variant only if the model_type matches,
+                # otherwise use the default for that model.
+                current_variant = self.model_variant if self.model_type == model_name else None
+
                 if model_name == "owl":
                     detector = OwlDetector(
                         threshold=self.score_threshold,
                         simplified_mode=self.simplified_mode,
-                        # Use owl variant if specified, else default
-                        variant=detection_config.get('model_variant') if self.model_type == "owl" else "base"
+                        variant=current_variant or "base" # Default if not specified
                     )
-                elif model_name == "yolo":
+                elif model_name == "yolo": # Standard YOLO
                     detector = YoloDetector(
                         threshold=self.score_threshold,
-                        # Use yolo variant if specified, else default
-                        variant=detection_config.get('model_variant') if self.model_type == "yolo" else "v8n"
+                        variant=current_variant or "v8n" # Default if not specified
                     )
                 elif model_name == "detr":
                     detector = DetrDetector(
                         threshold=self.score_threshold,
-                        # Use detr variant if specified, else default
-                        variant=detection_config.get('model_variant') if self.model_type == "detr" else "resnet50"
+                        variant=current_variant or "resnet50" # Default if not specified
                     )
                 elif model_name == "clip":
-                    # Get CLIP specific config
                     clip_config = config.get('clip', {})
                     detector = ClipDetector(
                         threshold=self.score_threshold,
@@ -578,6 +831,18 @@ class CritterDetector:
                         base_detector_type=clip_config.get('base_detector', 'yolo'),
                         base_detector_variant=clip_config.get('base_detector_variant', 'v8n'),
                         base_detector_threshold=clip_config.get('base_detector_threshold', 0.05)
+                    )
+                elif model_name == "groundingdino":
+                     detector = GroundingDinoDetector(
+                        threshold=self.score_threshold,
+                        simplified_mode=self.simplified_mode,
+                        variant=current_variant or "base" # Default if not specified
+                    )
+                elif model_name == "yoloworld":
+                     detector = YoloWorldDetector(
+                        threshold=self.score_threshold,
+                        simplified_mode=self.simplified_mode,
+                        variant=current_variant or "l" # Default 'large' if not specified
                     )
                 else:
                     print(f"Warning: Unknown model type '{model_name}' in ensemble, skipping")
@@ -597,20 +862,19 @@ class CritterDetector:
                 self.detector = OwlDetector(
                     threshold=self.score_threshold,
                     simplified_mode=self.simplified_mode,
-                    variant=self.model_variant if self.model_variant else "base"
+                    variant=self.model_variant or "base"
                 )
-            elif self.model_type == "yolo":
+            elif self.model_type == "yolo": # Standard YOLO
                 self.detector = YoloDetector(
                     threshold=self.score_threshold,
-                    variant=self.model_variant if self.model_variant else "v8n"
+                    variant=self.model_variant or "v8n"
                 )
             elif self.model_type == "detr":
                 self.detector = DetrDetector(
                     threshold=self.score_threshold,
-                    variant=self.model_variant if self.model_variant else "resnet50"
+                    variant=self.model_variant or "resnet50"
                 )
             elif self.model_type == "clip":
-                 # Get CLIP specific config
                 clip_config = config.get('clip', {})
                 self.detector = ClipDetector(
                     threshold=self.score_threshold,
@@ -618,6 +882,18 @@ class CritterDetector:
                     base_detector_type=clip_config.get('base_detector', 'yolo'),
                     base_detector_variant=clip_config.get('base_detector_variant', 'v8n'),
                     base_detector_threshold=clip_config.get('base_detector_threshold', 0.05)
+                )
+            elif self.model_type == "groundingdino":
+                self.detector = GroundingDinoDetector(
+                    threshold=self.score_threshold,
+                    simplified_mode=self.simplified_mode,
+                    variant=self.model_variant or "base"
+                )
+            elif self.model_type == "yoloworld":
+                self.detector = YoloWorldDetector(
+                    threshold=self.score_threshold,
+                    simplified_mode=self.simplified_mode,
+                    variant=self.model_variant or "l" # Default 'large'
                 )
             else:
                 raise ValueError(f"Unsupported single model type: {self.model_type}")

@@ -7,11 +7,11 @@ pip install pillow numpy colorama toml
 pip install scipy
 
 # Install Hugging Face transformers with various detection models
-pip install transformers==4.36.2
+pip install transformers>=4.39.0
 pip install safetensors
 
-# Install Ultralytics for YOLOv8
-pip install ultralytics
+# Install Ultralytics for YOLOv8 and YOLO-World (ensure recent version)
+pip install --upgrade ultralytics
 
 # Install timm for EfficientDet
 pip install timm
@@ -40,6 +40,30 @@ echo "Downloading YOLOv8 model..."
 python -c "
 from ultralytics import YOLO
 model = YOLO('yolov8n.pt')
+"
+
+# Download and cache the CLIP model
+echo "Downloading CLIP model..."
+python -c "
+from transformers import CLIPProcessor, CLIPModel
+processor = CLIPProcessor.from_pretrained('openai/clip-vit-large-patch14')
+model = CLIPModel.from_pretrained('openai/clip-vit-large-patch14')
+"
+
+# Download and cache the Grounding DINO model
+echo "Downloading Grounding DINO model..."
+python -c "
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+processor = AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-base')
+model = AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-base')
+print('Grounding DINO model loaded successfully!')
+"
+
+# Download YOLO-World model
+echo "Downloading YOLO-World model..."
+python -c "
+from ultralytics import YOLO
+model = YOLO('yolov8l-worldv2.pt') # Try the V2 large variant identifier
 "
 
 echo "Setup is complete."

@@ -49,9 +49,9 @@ hidden_dim = 32        # Hidden dimension size for LSTM
 num_layers = 5         # Number of layers for LSTM
 
 [detection]
-model = "owl"  # Options: "owl", "yolo", "detr", "clip"
-model_variant = "large"  # Options depend on model: for owl: "base", "large"; for yolo: "v8n", "v8s", "v8m", "v8l", "v8x"
-score_threshold = 0.2  # Detection confidence threshold
+model = "yoloworld"  # Options: "owl", "yolo", "detr", "clip", "groundingdino", "yoloworld"
+model_variant = "l"  # Options: owl(base,l); yolo(v8n-x); detr(res50,101); groundingdino(tiny-m); yoloworld(s,m,l,x,v2-s-x)
+score_threshold = 0.25  # Detection confidence threshold
 use_ensemble = false    # Whether to use ensemble detection with multiple models
 ensemble_weights = { owl = 0.7, yolo = 0.3 }  # Relative weights for ensemble models
 
@@ -67,6 +67,6 @@ s3_data_prefix = "data/"
 aws_region = "us-west-2"
 
 [evaluation]
-temporal_tolerance = 30.0  # Time window in seconds for matching detections
+temporal_tolerance = 300.0  # Time window in seconds for matching detections
 simplified_mode = false      # Use single "organism" label instead of detailed categories
 skip_organism_filter = true  # Skip positive filtering, only remove operational terms
