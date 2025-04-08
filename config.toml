@@ -54,6 +54,7 @@ model_variant = "l"  # Options: owl(base,l); yolo(v8n-x); detr(res50,101); groun
 score_threshold = 0.25  # Detection confidence threshold
 use_ensemble = false    # Whether to use ensemble detection with multiple models
 ensemble_weights = { owl = 0.7, yolo = 0.3 }  # Relative weights for ensemble models
+labels_csv_path = "marine_labels.csv" # Path to CSV file with organism labels
 
 [clip]
 base_detector = "yolo" # Options: "yolo", "detr"

@@ -10,14 +10,19 @@ Automatic Highlight Detection: Employs deep learning algorithms to automatically
 Multiple Detection Models: Now supports several state-of-the-art detection models:
 OWL-ViT: Google's Open-vocabulary detector with specialized marine organism prompts
 YOLOv8: Ultralytics' fast and accurate object detection with multiple size options
-DETR: Facebook's Detection Transformer for object detection
+DETR: Facebook's Detection Transformer for object detection (outputs general COCO labels)
 CLIP: OpenAI's model used here as a patch classifier, leveraging another detector (YOLO or DETR) for initial bounding box proposals.
+Grounding DINO: Open-vocabulary detector similar to OWL, uses text prompts for zero-shot detection.
+YOLO-World: Fast zero-shot detector from Ultralytics, uses text prompts with YOLO architecture.
 Ensemble Detection: Combines multiple models with customizable weights to leverage the strengths of each detector for improved accuracy
 Model Variant Selection: Choose between different model variants:
 OWL-ViT: base or large
 YOLOv8: nano, small, medium, large, or extra large
 DETR: resnet50, resnet101, or dc5
 CLIP: Uses a configurable base detector (YOLO or DETR) with its own variants.
+Grounding DINO: tiny, small, base, medium (check Hugging Face for latest)
+YOLO-World: s, m, l, x, v2-s, v2-m, v2-l, v2-x (check Ultralytics for latest)
+Customizable Labels: Define target marine organism labels for zero-shot detectors (OWL, CLIP, GroundingDINO, YOLO-World) in an external CSV file (`marine_labels.csv` by default).
 Customizable Configuration: All detector options are configurable via TOML config file
 Temporal Dynamics Modeling: Utilizes BiLSTM networks to capture temporal dependencies across video frames, enhancing the accuracy of highlight detection.
 Model Saving and Checkpointing: Implements model checkpointing and early stopping to prevent overfitting and enable training resumption.
@@ -96,11 +101,12 @@ hidden_dim = 32        # Hidden dimension size for LSTM
 num_layers = 5         # Number of layers for LSTM
 
 [detection]
-model = "owl"  # Options: "owl", "yolo", "detr", "clip"
-model_variant = "base"  # Options depend on model: for owl: "base", "large"; for yolo: "v8n", "v8s", "v8m", "v8l", "v8x"
-score_threshold = 0.1  # Detection confidence threshold
-use_ensemble = true    # Whether to use ensemble detection with multiple models
-ensemble_weights = {"owl": 0.6, "clip": 0.4}  # Relative weights for ensemble models
+model = "yoloworld"  # Options: "owl", "yolo", "detr", "clip", "groundingdino", "yoloworld"
+model_variant = "l"  # Options depend on model (see features list)
+score_threshold = 0.1  # Detection confidence threshold (tune for YOLO-World)
+use_ensemble = false    # Whether to use ensemble detection with multiple models
+ensemble_weights = {"owl": 0.5, "yoloworld": 0.5}  # Relative weights for ensemble models
+labels_csv_path = "marine_labels.csv" # Path to CSV file with organism labels for zero-shot models
 
 [clip]
 base_detector = "yolo"             # Which detector to use for proposals ("yolo" or "detr")

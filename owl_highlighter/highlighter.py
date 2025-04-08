@@ -14,6 +14,36 @@ from colorama import Fore, Style
 import numpy as np
 import toml
 from tqdm import tqdm
+import pandas as pd
+
+def _load_labels_from_source(labels_csv_path: Optional[str], default_classes: List[str]) -> List[str]:
+    """Loads labels from CSV or uses default list."""
+    if labels_csv_path and os.path.exists(labels_csv_path):
+        try:
+            df = pd.read_csv(labels_csv_path)
+            if 'label_name' in df.columns:
+                labels = df['label_name'].astype(str).dropna().tolist()
+                print(f"Loaded {len(labels)} labels from {labels_csv_path}")
+                return labels
+            else:
+                print(f"Warning: 'label_name' column not found in {labels_csv_path}. Using default labels.")
+        except Exception as e:
+            print(f"Warning: Error reading {labels_csv_path}: {e}. Using default labels.")
+    else:
+        if labels_csv_path:
+             print(f"Warning: Labels CSV path '{labels_csv_path}' not found. Using default labels.")
+        else:
+             print("No labels CSV path provided. Using default labels.")
+
+    # Fallback to default labels (flattened from the original structure)
+    default_labels = [
+        name.strip()
+        for class_string in default_classes
+        for name in class_string.split(", ")
+        if name.strip()
+    ]
+    print(f"Using {len(default_labels)} default labels.")
+    return default_labels
 
 class BaseDetector:
     """Base class for all detectors"""
@@ -26,65 +56,55 @@ class BaseDetector:
 
 class OwlDetector(BaseDetector):
     """OWLv2 detector from Google"""
-    # Define comprehensive ocean classes as a class attribute
+    # Keep OCEAN_CLASSES only as a fallback default
     OCEAN_CLASSES = [
         # Actinopterygii (Ray-finned fishes)
         "fish, anchovy, barracuda, bass, blenny, butterflyfish, cardinalfish, clownfish, cod, "
         "damselfish, eel, flounder, goby, grouper, grunts, halibut, herring, jackfish, lionfish, "
         "mackerel, moray eel, mullet, parrotfish, pipefish, pufferfish, rabbitfish, rays, "
         "scorpionfish, seahorse, sergeant major, snapper, sole, surgeonfish, tang, threadfin, "
-        "triggerfish, tuna, wrasse, "
-        
+        "triggerfish, tuna, wrasse, ",
         # Chondrichthyes (Cartilaginous fishes)
         "shark, angel shark, bamboo shark, blacktip reef shark, bull shark, carpet shark, "
         "cat shark, dogfish, great white shark, hammerhead shark, leopard shark, nurse shark, "
-        "reef shark, sand tiger shark, thresher shark, tiger shark, whale shark, wobbegong, "
-
+        "reef shark, sand tiger shark, thresher shark, tiger shark, whale shark, wobbegong, ",
         # Mammalia (Marine mammals)
         "whale, dolphin, porpoise, seal, sea lion, dugong, manatee, orca, pilot whale, "
         "sperm whale, humpback whale, blue whale, minke whale, right whale, beluga whale, "
-        "narwhal, walrus, "
-
+        "narwhal, walrus, ",
         # Cephalopoda (Cephalopods)
         "octopus, squid, cuttlefish, nautilus, bobtail squid, giant squid, reef octopus, "
-        "blue-ringed octopus, mimic octopus, dumbo octopus, vampire squid, "
-
+        "blue-ringed octopus, mimic octopus, dumbo octopus, vampire squid, ",
         # Crustacea (Crustaceans)
         "crab, lobster, shrimp, barnacle, hermit crab, spider crab, king crab, snow crab, "
-        "mantis shrimp, krill, copepod, amphipod, isopod, crawfish, crayfish, "
-
+        "mantis shrimp, krill, copepod, amphipod, isopod, crawfish, crayfish, ",
         # Echinodermata (Echinoderms)
         "starfish, sea star, brittle star, basket star, sea cucumber, sea urchin, sand dollar, "
-        "feather star, crinoid, "
-
+        "feather star, crinoid, ",
         # Cnidaria (Cnidarians)
         "jellyfish, coral, sea anemone, hydroid, sea fan, sea whip, moon jellyfish, "
         "box jellyfish, lion's mane jellyfish, sea pen, fire coral, brain coral, "
-        "staghorn coral, elkhorn coral, soft coral, gorgonian, "
-
+        "staghorn coral, elkhorn coral, soft coral, gorgonian, ",
         # Mollusca (Non-cephalopod mollusks)
         "clam, mussel, oyster, scallop, nudibranch, sea slug, chiton, conch, cowrie, "
-        "giant clam, abalone, whelk, limpet, "
-
+        "giant clam, abalone, whelk, limpet, ",
         # Other Marine Life
         "sponge, tunicate, sea squirt, salp, pyrosome, coral polyp, hydrozoan, bryozoan, "
         "zoanthid, colonial anemone"
     ]
 
-    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base"):
+    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base",
+                 labels_csv_path: Optional[str] = None):
         super().__init__(threshold)
         
+        # Load labels using the utility function
+        raw_labels = _load_labels_from_source(labels_csv_path, self.OCEAN_CLASSES)
+
         # Format class names for OWL-ViT
         if simplified_mode:
             self.formatted_classes = ["a photo of an organism", "a photo of an ocean animal", "a photo of a plant"]
         else:
-            # Split OCEAN_CLASSES into a list and format them
-            self.formatted_classes = [
-                f"a photo of a {name.strip()}" 
-                for class_string in self.OCEAN_CLASSES 
-                for name in class_string.split(", ")
-                if name.strip()
-            ]
+            self.formatted_classes = [f"a photo of a {name}" for name in raw_labels]
         
         # Load model and processor based on variant
         model_name = "google/owlv2-base-patch16-ensemble"
@@ -360,13 +380,13 @@ class ClipDetector(BaseDetector):
     CLIP-based detector that uses a base detector for proposals
     and CLIP for classifying patches within those proposals.
     """
-    # Reuse ocean classes from OwlDetector
-    OCEAN_CLASSES = OwlDetector.OCEAN_CLASSES
+    # No need for OCEAN_CLASSES here anymore
 
     def __init__(self, threshold: float = 0.1, simplified_mode: bool = False,
                  base_detector_type: str = "yolo",
                  base_detector_variant: str = "v8n",
-                 base_detector_threshold: float = 0.05):
+                 base_detector_threshold: float = 0.05,
+                 labels_csv_path: Optional[str] = None):
         """
         Initializes the ClipDetector.
 
@@ -376,6 +396,7 @@ class ClipDetector(BaseDetector):
             base_detector_type (str): Which detector to use for box proposals ('yolo' or 'detr').
             base_detector_variant (str): Variant for the base detector.
             base_detector_threshold (float): Confidence threshold for the base detector proposals.
+            labels_csv_path (Optional[str]): Path to a CSV file containing labels.
         """
         super().__init__(threshold)
         self.simplified_mode = simplified_mode
@@ -412,17 +433,14 @@ class ClipDetector(BaseDetector):
         self.clip_model.eval()
         print("CLIP model loaded.")
 
+        # Load labels using the utility function (provide OwlDetector's default as fallback)
+        raw_labels = _load_labels_from_source(labels_csv_path, OwlDetector.OCEAN_CLASSES)
+
         # Prepare text prompts for CLIP
-        if self.simplified_mode:
+        if simplified_mode:
             self.clip_texts = ["an organism", "an ocean animal", "marine life", "underwater creature", "something non-biological", "water"]
         else:
-            # Flatten the OCEAN_CLASSES structure for CLIP prompts
-            self.clip_texts = [
-                name.strip()
-                for class_string in self.OCEAN_CLASSES
-                for name in class_string.split(", ")
-                if name.strip()
-            ]
+            self.clip_texts = raw_labels # Use loaded labels directly
             # Add some negative prompts
             self.clip_texts.extend(["empty water", "seafloor", "rov equipment", "laser dots"])
 
@@ -522,10 +540,10 @@ class GroundingDinoDetector(BaseDetector):
     Grounding DINO detector (e.g., IDEA-Research/grounding-dino-base).
     Uses text prompts (classes separated by '.') for zero-shot detection.
     """
-    # Reuse ocean classes from OwlDetector
-    OCEAN_CLASSES = OwlDetector.OCEAN_CLASSES
+    # No need for OCEAN_CLASSES here anymore
 
-    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base"):
+    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base",
+                 labels_csv_path: Optional[str] = None):
         super().__init__(threshold)
         self.simplified_mode = simplified_mode # Store simplified_mode
 
@@ -550,19 +568,14 @@ class GroundingDinoDetector(BaseDetector):
         self.model.eval()
         print("GroundingDINO model loaded.")
 
-        # Prepare text prompts LIST
-        if simplified_mode:
-            self.prompt_texts = ["organism", "ocean animal", "marine life", "underwater creature"]
-        else:
-            # Flatten the OCEAN_CLASSES structure into a list
-            self.prompt_texts = [
-                name.strip()
-                for class_string in self.OCEAN_CLASSES
-                for name in class_string.split(", ")
-                if name.strip()
-            ]
-        print(f"Initialized GroundingDINO with {len(self.prompt_texts)} potential classes.")
+        # Load labels using the utility function
+        raw_labels = _load_labels_from_source(labels_csv_path, OwlDetector.OCEAN_CLASSES)
 
+        # Store the list for batch processing
+        self.prompt_texts = raw_labels
+        print(f"Initialized GroundingDINO with {len(self.prompt_texts)} potential classes from source.")
+
+        # Note: The actual prompt string creation is now handled within the detect method's loop
 
     @torch.no_grad()
     def detect(self, image: Image.Image) -> List[Dict]:
@@ -668,10 +681,10 @@ class YoloWorldDetector(BaseDetector):
     """
     YOLO-World detector for zero-shot object detection using text prompts.
     """
-    # Reuse ocean classes from OwlDetector
-    OCEAN_CLASSES = OwlDetector.OCEAN_CLASSES
+    # No need for OCEAN_CLASSES here anymore
 
-    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "l"):
+    def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "l",
+                 labels_csv_path: Optional[str] = None):
         """
         Initializes the YoloWorldDetector.
 
@@ -679,6 +692,7 @@ class YoloWorldDetector(BaseDetector):
             threshold (float): Confidence threshold for detection.
             simplified_mode (bool): Whether to use simplified classes.
             variant (str): Model variant (e.g., "v2-s", "v2-m", "v2-l", "v2-x"). Default is "l".
+            labels_csv_path (Optional[str]): Path to a CSV file containing labels.
         """
         super().__init__(threshold)
 
@@ -707,18 +721,16 @@ class YoloWorldDetector(BaseDetector):
         self.model = YOLO(model_name)
         print("YOLO-World model loaded.")
 
+        # Load labels using the utility function
+        raw_labels = _load_labels_from_source(labels_csv_path, OwlDetector.OCEAN_CLASSES)
+
         # Prepare text prompts list
         if simplified_mode:
             self.prompt_texts = ["organism", "ocean animal", "marine life", "underwater creature"]
         else:
-            # Flatten the OCEAN_CLASSES structure into a list
-            self.prompt_texts = [
-                name.strip()
-                for class_string in self.OCEAN_CLASSES
-                for name in class_string.split(", ")
-                if name.strip()
-            ]
-        print(f"Prepared {len(self.prompt_texts)} classes for YOLO-World prompt.")
+            self.prompt_texts = raw_labels # Use loaded labels directly
+
+        print(f"Prepared {len(self.prompt_texts)} classes for YOLO-World prompt from source.")
 
         # Set the model's classes using the prompt texts
         # This tells YOLO-World what to look for
@@ -790,6 +802,7 @@ class CritterDetector:
         self.model_variant = detection_config.get('model_variant', None)
         self.score_threshold = detection_config['score_threshold']
         self.use_ensemble = detection_config.get('use_ensemble', False)
+        self.labels_csv_path = detection_config.get('labels_csv_path', None)
 
         # Simplified mode from evaluation config for consistency
         self.simplified_mode = config['evaluation'].get('simplified_mode', False)
@@ -811,17 +824,18 @@ class CritterDetector:
                     detector = OwlDetector(
                         threshold=self.score_threshold,
                         simplified_mode=self.simplified_mode,
-                        variant=current_variant or "base" # Default if not specified
+                        variant=current_variant or "base",
+                        labels_csv_path=self.labels_csv_path
                     )
                 elif model_name == "yolo": # Standard YOLO
                     detector = YoloDetector(
                         threshold=self.score_threshold,
-                        variant=current_variant or "v8n" # Default if not specified
+                        variant=current_variant or "v8n"
                     )
                 elif model_name == "detr":
                     detector = DetrDetector(
                         threshold=self.score_threshold,
-                        variant=current_variant or "resnet50" # Default if not specified
+                        variant=current_variant or "resnet50"
                     )
                 elif model_name == "clip":
                     clip_config = config.get('clip', {})
@@ -830,23 +844,38 @@ class CritterDetector:
                         simplified_mode=self.simplified_mode,
                         base_detector_type=clip_config.get('base_detector', 'yolo'),
                         base_detector_variant=clip_config.get('base_detector_variant', 'v8n'),
-                        base_detector_threshold=clip_config.get('base_detector_threshold', 0.05)
+                        base_detector_threshold=clip_config.get('base_detector_threshold', 0.05),
+                        labels_csv_path=self.labels_csv_path
                     )
                 elif model_name == "groundingdino":
                      detector = GroundingDinoDetector(
                         threshold=self.score_threshold,
                         simplified_mode=self.simplified_mode,
-                        variant=current_variant or "base" # Default if not specified
+                        variant=current_variant or "base",
+                        labels_csv_path=self.labels_csv_path
                     )
                 elif model_name == "yoloworld":
                      detector = YoloWorldDetector(
                         threshold=self.score_threshold,
                         simplified_mode=self.simplified_mode,
-                        variant=current_variant or "l" # Default 'large' if not specified
+                        variant=current_variant or "l",
+                        labels_csv_path=self.labels_csv_path
                     )
                 else:
-                    print(f"Warning: Unknown model type '{model_name}' in ensemble, skipping")
-                    continue
+                    # Handle YOLO and DETR which don't use the label list
+                    if model_name == "yolo":
+                        detector = YoloDetector(
+                            threshold=self.score_threshold,
+                            variant=current_variant or "v8n"
+                        )
+                    elif model_name == "detr":
+                        detector = DetrDetector(
+                            threshold=self.score_threshold,
+                            variant=current_variant or "resnet50"
+                        )
+                    else:
+                        print(f"Warning: Unknown model type '{model_name}' in ensemble, skipping")
+                        continue
 
                 detectors[model_name] = (detector, weight)
 
@@ -862,7 +891,8 @@ class CritterDetector:
                 self.detector = OwlDetector(
                     threshold=self.score_threshold,
                     simplified_mode=self.simplified_mode,
-                    variant=self.model_variant or "base"
+                    variant=self.model_variant or "base",
+                    labels_csv_path=self.labels_csv_path
                 )
             elif self.model_type == "yolo": # Standard YOLO
                 self.detector = YoloDetector(
@@ -881,19 +911,22 @@ class CritterDetector:
                     simplified_mode=self.simplified_mode,
                     base_detector_type=clip_config.get('base_detector', 'yolo'),
                     base_detector_variant=clip_config.get('base_detector_variant', 'v8n'),
-                    base_detector_threshold=clip_config.get('base_detector_threshold', 0.05)
+                    base_detector_threshold=clip_config.get('base_detector_threshold', 0.05),
+                    labels_csv_path=self.labels_csv_path
                 )
             elif self.model_type == "groundingdino":
                 self.detector = GroundingDinoDetector(
                     threshold=self.score_threshold,
                     simplified_mode=self.simplified_mode,
-                    variant=self.model_variant or "base"
+                    variant=self.model_variant or "base",
+                    labels_csv_path=self.labels_csv_path
                 )
             elif self.model_type == "yoloworld":
                 self.detector = YoloWorldDetector(
                     threshold=self.score_threshold,
                     simplified_mode=self.simplified_mode,
-                    variant=self.model_variant or "l" # Default 'large'
+                    variant=self.model_variant or "l",
+                    labels_csv_path=self.labels_csv_path
                 )
             else:
                 raise ValueError(f"Unsupported single model type: {self.model_type}")
