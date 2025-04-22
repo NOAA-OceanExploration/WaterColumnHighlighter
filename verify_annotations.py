@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple, Optional
 
 def parse_video_timestamp(filename: str) -> Optional[datetime]:
     """Extract timestamp from video filename."""
+    print(f"DEBUG: Parsing timestamp for filename: {filename}") # Added log
     # Look for standard Z format first
     timestamp_match = re.search(r'(\d{8}T\d{6}Z)', filename)
     if timestamp_match:
@@ -16,25 +17,28 @@ def parse_video_timestamp(filename: str) -> Optional[datetime]:
         try:
             # Parse without timezone info first for consistency
             parsed_time = datetime.strptime(timestamp_str, '%Y%m%dT%H%M%SZ')
+            print(f"DEBUG: Parsed Z timestamp: {parsed_time} (naive)") # Added log
             return parsed_time
         except ValueError as e:
             print(f"Error parsing Z timestamp {timestamp_str} from {filename}: {e}")
             # Continue to try other formats if Z format fails
-    
+
     # Try alternative common pattern without Z
     timestamp_match_no_z = re.search(r'(\d{8}T\d{6})', filename)
     if timestamp_match_no_z:
         timestamp_str = timestamp_match_no_z.group(1)
         try:
              parsed_time = datetime.strptime(timestamp_str, '%Y%m%dT%H%M%S')
+             print(f"DEBUG: Parsed non-Z timestamp: {parsed_time} (naive)") # Added log
              return parsed_time
         except ValueError as e:
             print(f"Error parsing non-Z timestamp {timestamp_str} from {filename}: {e}")
-    
+
     # Add more specific patterns if needed based on your filenames
     # Example: timestamp_match_custom = re.search(r'pattern', filename) ...
 
     print(f"Warning: No recognizable timestamp found in filename: {filename}")
+    print(f"DEBUG: Failed to parse timestamp for: {filename}") # Added log
     return None
 
 
@@ -42,7 +46,14 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
     """Load and preprocess annotations from CSV."""
     print(f"Loading annotations from: {csv_path}")
     try:
-        df = pd.read_csv(csv_path)
+        # Increase robustness for potentially malformed CSVs
+        # Try standard engine first
+        try:
+            df = pd.read_csv(csv_path, low_memory=False)
+        except pd.errors.ParserError:
+            print("Warning: Standard CSV parsing failed. Trying Python engine (slower)...")
+            df = pd.read_csv(csv_path, engine='python', on_bad_lines='warn', low_memory=False) # Use python engine for more complex cases
+
     except FileNotFoundError:
         print(f"Error: Annotation file not found at {csv_path}")
         return None
@@ -52,7 +63,8 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
 
     # --- Standardize Column Names (similar to evaluate_detections.py) ---
     column_mapping = {}
-    expected_columns = ['Dive ID', 'Start Date', 'Comment', 'Taxonomy', 'Taxon', 'Taxon Path']
+    # Added 'Annotation ID' to expected columns
+    expected_columns = ['Dive ID', 'Start Date', 'Comment', 'Taxonomy', 'Taxon', 'Taxon Path', 'Annotation ID']
     df_columns_lower = {col.lower(): col for col in df.columns}
 
     for expected_col in expected_columns:
@@ -66,12 +78,15 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
         else:
             # Try partial match if exact/case-insensitive fails
             key_part = expected_col.split()[0].lower()
-            partial_matches = [orig_col for lower_col, orig_col in df_columns_lower.items() if key_part in lower_col]
+            # Be careful with partial matches, prioritize exact/case-insensitive
+            partial_matches = [orig_col for lower_col, orig_col in df_columns_lower.items()
+                               if key_part in lower_col and orig_col not in column_mapping.keys()]
             if partial_matches:
-                # Use the first partial match found
+                # Use the first partial match found that hasn't been mapped yet
                 column_mapping[partial_matches[0]] = expected_col
                 print(f"Mapping partial match '{partial_matches[0]}' to '{expected_col}'")
-            else:
+            # Only warn if it's a core required column or frequently used one
+            elif expected_col in ['Dive ID', 'Start Date', 'Comment', 'Taxon', 'Annotation ID']:
                  print(f"Warning: Could not find a suitable match for expected column '{expected_col}'")
 
 
@@ -85,9 +100,11 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
         print(f"Error: Missing required columns in annotations. Need: {required_cols}. Found: {list(df.columns)}")
         return None
 
-    # Ensure 'Comment' and 'Taxon' exist, even if empty
+    # Ensure 'Comment', 'Taxon', and 'Annotation ID' exist, even if empty
     if 'Comment' not in df.columns:
         df['Comment'] = ''
+    if 'Annotation ID' not in df.columns:
+        df['Annotation ID'] = 'N/A' # Add a default value if missing
     if 'Taxon' not in df.columns:
         # Try 'Taxon Path' or 'Taxonomy' as fallbacks before setting to Unknown
         fallback_taxon_col = None
@@ -95,7 +112,7 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
             fallback_taxon_col = 'Taxon Path'
         elif 'Taxonomy' in df.columns:
              fallback_taxon_col = 'Taxonomy'
-        
+
         if fallback_taxon_col:
             print(f"Warning: 'Taxon' column missing. Using '{fallback_taxon_col}' as Taxon.")
             df['Taxon'] = df[fallback_taxon_col]
@@ -103,15 +120,20 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
             print("Warning: 'Taxon' column missing and no suitable fallback found. Setting Taxon to 'Unknown'.")
             df['Taxon'] = 'Unknown'
 
-    # Fill NaN comments/taxons
+    # Fill NaN comments/taxons/annotation IDs
     df['Comment'] = df['Comment'].fillna('No comment')
     df['Taxon'] = df['Taxon'].fillna('Unknown')
+    df['Annotation ID'] = df['Annotation ID'].fillna('N/A')
 
 
     # --- Process Timestamps ---\
     try:
+        print(f"DEBUG: Original 'Start Date' head:\n{df['Start Date'].head()}") # Added log
         # Attempt to convert 'Start Date', coercing errors to NaT (Not a Time)
-        df['Start Date'] = pd.to_datetime(df['Start Date'], errors='coerce')
+        # Ensure UTC is specified during parsing, as 'Z' indicates UTC
+        df['Start Date'] = pd.to_datetime(df['Start Date'], errors='coerce', utc=True)
+        print(f"DEBUG: 'Start Date' after parsing (UTC):\n{df['Start Date'].head()}") # Added log
+
         # Drop rows where timestamp conversion failed
         original_count = len(df)
         df = df.dropna(subset=['Start Date'])
@@ -120,10 +142,10 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
         if df.empty:
              print("Error: No valid 'Start Date' timestamps found after cleaning.")
              return None
-        # Ensure timezone-naive for consistent comparison with video timestamps later
-        # Check if tz-aware first before localizing to None
-        if pd.api.types.is_datetime64_any_dtype(df['Start Date']) and df['Start Date'].dt.tz is not None:
-             df['Start Date'] = df['Start Date'].dt.tz_localize(None)
+
+        # Convert to timezone-naive AFTER ensuring it was parsed correctly as UTC
+        df['Start Date'] = df['Start Date'].dt.tz_localize(None)
+        print(f"DEBUG: 'Start Date' after tz_localize(None):\n{df['Start Date'].head()}") # Added log
 
     except Exception as e:
         print(f"Error processing 'Start Date' column: {e}")
@@ -149,22 +171,43 @@ def load_annotations(csv_path: str) -> Optional[pd.DataFrame]:
 def find_video_for_annotation(annotation_time: datetime, dive_id: str, video_files_map: Dict[str, List[Tuple[str, datetime, datetime]]]) -> Optional[str]:
     """Find the video file that contains the annotation timestamp."""
     if dive_id not in video_files_map:
+        print(f"DEBUG: Dive ID '{dive_id}' not found in video_files_map keys.")
         return None
 
-    # Find potential matches (videos for the correct dive)
     potential_videos = video_files_map[dive_id]
+    # Prioritize ROVHD videos if multiple matches exist for the same time
+    rovhd_matches = []
+    other_matches = []
 
-    # Iterate through sorted videos for the dive
+    tolerance = timedelta(seconds=1) # Keep tolerance for slight edge cases
+
     for video_path, start_time, end_time in potential_videos:
-        # Check if the annotation time falls within the video's time range
-        # Add a small tolerance (e.g., 1 second) to handle potential rounding issues
-        tolerance = timedelta(seconds=1)
         if (start_time - tolerance) <= annotation_time <= (end_time + tolerance):
-            return video_path
+            if 'ROVHD' in os.path.basename(video_path).upper():
+                rovhd_matches.append(video_path)
+            else:
+                other_matches.append(video_path)
 
-    # If no exact match, maybe print nearby videos for debugging?
-    # print(f"Debug: No video found for {annotation_time} in Dive {dive_id}. Videos checked: {potential_videos}")
-    return None
+    if rovhd_matches:
+        # If multiple ROVHD match (unlikely unless overlapping recordings), return the first
+        print(f"DEBUG: Found {len(rovhd_matches)} ROVHD matches. Using: {os.path.basename(rovhd_matches[0])}")
+        return rovhd_matches[0]
+    elif other_matches:
+        # If no ROVHD match, return the first non-ROVHD match
+        print(f"DEBUG: No ROVHD match found. Found {len(other_matches)} other matches. Using: {os.path.basename(other_matches[0])}")
+        return other_matches[0]
+    else:
+        # Debug why no match was found
+        print(f"DEBUG: No video found for {annotation_time} in Dive {dive_id}.")
+        if potential_videos:
+            print("DEBUG: Videos checked for this dive (Times are naive):")
+            for vp, vs, ve in potential_videos[:5]: # Print first 5 for brevity
+                print(f"  - {os.path.basename(vp)}: Start={vs}, End={ve}")
+            if len(potential_videos) > 5: print("  ...")
+        else:
+            print("DEBUG: No videos listed for this dive in the map.")
+        return None
+
 
 def get_video_metadata(video_path: str) -> Optional[Tuple[float, int]]:
     """Gets FPS and Frame Count using OpenCV."""
@@ -195,26 +238,39 @@ def scan_video_directory(video_dir: str) -> Dict[str, List[Tuple[str, datetime, 
         return {}
 
     # Use os.walk to traverse directory tree
+    processed_videos = 0
+    skipped_metadata = 0
+    skipped_timestamp = 0
+    skipped_no_dive_id = 0
+
     for root, dirs, files in os.walk(video_dir):
          # Try to extract Dive ID from the current directory path (e.g., .../EX2304/...)
          dive_id_match = re.search(r'(EX\d{4})', root) # Simple pattern, adjust if needed
          current_dive_id = dive_id_match.group(1) if dive_id_match else None
 
          if not current_dive_id:
-             # Maybe check parent dirs if structure is deeper?
-             pass # For now, skip files not in a recognized dive folder structure
+             # Also check parent directory structure, e.g., if videos are in .../EX2304/Compressed/
+             parent_dir_match = re.search(r'(EX\d{4})', os.path.dirname(root))
+             if parent_dir_match:
+                 current_dive_id = parent_dir_match.group(1)
+
+
+         # Prioritize getting dive_id from folder structure
+         root_dive_id = current_dive_id
 
          for filename in files:
              if filename.lower().endswith(('.mp4', '.mov', '.avi')):
-                 # If we couldn't get Dive ID from folder, try from filename
-                 file_dive_id = current_dive_id
+                 # Try to get Dive ID: Folder > Filename
+                 file_dive_id = root_dive_id # Start with folder dive id
                  if not file_dive_id:
+                     # If folder ID not found, try from filename
                      dive_id_match_file = re.match(r'(EX\d{4})', filename)
                      if dive_id_match_file:
                          file_dive_id = dive_id_match_file.group(1)
 
                  if not file_dive_id:
                      # print(f"Warning: Could not determine Dive ID for video: {os.path.join(root, filename)}")
+                     skipped_no_dive_id += 1
                      continue # Skip if no Dive ID is found
 
                  video_path = os.path.join(root, filename)
@@ -224,22 +280,34 @@ def scan_video_directory(video_dir: str) -> Dict[str, List[Tuple[str, datetime, 
                     metadata = get_video_metadata(video_path)
                     if metadata:
                         fps, frame_count = metadata
-                        duration_seconds = frame_count / fps
-                        end_time = start_time + timedelta(seconds=duration_seconds)
+                        if fps > 0: # Avoid division by zero
+                            duration_seconds = frame_count / fps
+                            end_time = start_time + timedelta(seconds=duration_seconds)
+                            print(f"DEBUG: Video {filename} - Dive: {file_dive_id}, Start: {start_time}, End: {end_time}, FPS: {fps:.2f}, Frames: {frame_count}, Duration: {duration_seconds:.2f}s") # Added log
 
-                        if file_dive_id not in video_files_map:
-                            video_files_map[file_dive_id] = []
-                        video_files_map[file_dive_id].append((video_path, start_time, end_time))
+                            if file_dive_id not in video_files_map:
+                                video_files_map[file_dive_id] = []
+                            video_files_map[file_dive_id].append((video_path, start_time, end_time))
+                            processed_videos += 1
+                        else:
+                             print(f"Warning: Skipping video {filename} due to zero FPS.") # Added log
+                             skipped_metadata += 1
                     else:
-                         print(f"Skipping video {filename} due to missing metadata.")
+                         print(f"Skipping video {filename} due to missing or invalid metadata.") # Modified log
+                         skipped_metadata += 1
                  else:
-                     print(f"Skipping video {filename} due to unparsable timestamp.")
+                     # print(f"Skipping video {filename} due to unparsable timestamp.") # Less verbose
+                     skipped_timestamp += 1
 
     # Sort video lists by start time for each dive
     for dive_id in video_files_map:
         video_files_map[dive_id].sort(key=lambda x: x[1])
 
-    print(f"Found {sum(len(v) for v in video_files_map.values())} videos across {len(video_files_map)} dives.")
+    print(f"\nVideo Scan Summary:")
+    print(f"  Found and processed {processed_videos} videos across {len(video_files_map)} dives.")
+    print(f"  Skipped (no dive ID): {skipped_no_dive_id}")
+    print(f"  Skipped (unparsable timestamp): {skipped_timestamp}")
+    print(f"  Skipped (missing/invalid metadata): {skipped_metadata}")
     return video_files_map
 
 def main():
@@ -253,8 +321,11 @@ def main():
             os.path.join(os.path.dirname(__file__), '../config.toml') # If script is in a package structure
         ]
         # Add workspace root if __file__ is not reliable
+        # Check if __file__ is defined and use it if available
         if '__file__' in locals() or '__file__' in globals():
-             possible_paths.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.toml'))
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            possible_paths.append(os.path.join(script_dir, 'config.toml'))
+            possible_paths.append(os.path.join(script_dir, '../config.toml'))
 
 
         for path in possible_paths:
@@ -270,7 +341,9 @@ def main():
              if os.path.exists(cwd_config_path):
                  config_path = cwd_config_path
              else:
-                 raise FileNotFoundError(f"config.toml not found. Checked paths: {possible_paths} and {cwd_config_path}")
+                 # Provide more specific paths checked in the error
+                 checked_paths_str = "\n".join([os.path.abspath(p) for p in possible_paths] + [cwd_config_path])
+                 raise FileNotFoundError(f"config.toml not found. Checked paths:\n{checked_paths_str}")
 
         config = toml.load(config_path)
         print(f"Loaded configuration from: {config_path}")
@@ -285,6 +358,7 @@ def main():
              # Provide default or fallback?
              output_dir = os.path.join(os.path.dirname(config_path), "annotation_verification_frames")
              print(f"Using default verification output directory: {output_dir}")
+             config['paths']['verification_output_dir'] = output_dir # Add to config for consistency
 
 
     except FileNotFoundError as e:
@@ -329,13 +403,17 @@ def main():
             dive_id = row['Formatted Dive ID'] # Use the potentially mapped Dive ID
             comment = str(row.get('Comment', '')) # Ensure comment is string
             taxon = str(row.get('Taxon','Unknown')) # Ensure taxon is string
+            annotation_id_raw = row.get('Annotation ID', 'N/A') # Get Annotation ID if available
+            print(f"\nDEBUG: Processing Annotation ID: {annotation_id_raw}, Dive: {dive_id}, Time: {annotation_time}, Taxon: {taxon}") # Added log
 
             # Find the correct video file using the pre-scanned map
             video_path = find_video_for_annotation(annotation_time, dive_id, video_files_map)
 
             if video_path is None:
+                # Log already happens inside find_video_for_annotation
                 skipped_no_video += 1
                 continue
+            # print(f"DEBUG: Found matching video: {os.path.basename(video_path)}") # Log inside find_video_for_annotation now
 
             # Get video details (start time needed for frame calculation)
             video_info = next((info for info in video_files_map[dive_id] if info[0] == video_path), None)
@@ -343,7 +421,8 @@ def main():
                  print(f"Internal Error: Video info mismatch for {video_path}. Skipping.")
                  error_count += 1
                  continue
-            _, video_start_time, _ = video_info
+            _, video_start_time, video_end_time = video_info # Get end time too
+            print(f"DEBUG: Video Time Range (Naive): Start={video_start_time}, End={video_end_time}") # Added log
 
             # --- Open video using cache ---
             cap = video_caps.get(video_path)
@@ -358,6 +437,7 @@ def main():
                     # Remove from cache if failed
                     if video_path in video_caps: del video_caps[video_path]
                     error_count += 1
+                    # Maybe try finding an alternative video if one exists? For now, just skip.
                     continue
                 video_caps[video_path] = cap # Add successfully opened cap to cache
             # --- Video is now open ---
@@ -370,103 +450,142 @@ def main():
 
             # Calculate frame number precisely
             time_diff = annotation_time - video_start_time
-            # Ensure time_diff is non-negative; could happen with tolerance issues
-            if time_diff.total_seconds() < 0:
+            time_diff_seconds = time_diff.total_seconds()
+
+            # Check if time difference seems plausible given video duration
+            # Add a safety margin (e.g., 5 seconds) for potential small inaccuracies
+            video_duration_seconds = (video_end_time - video_start_time).total_seconds()
+            if not (-5 <= time_diff_seconds <= video_duration_seconds + 5):
+                 print(f"WARNING: Time difference ({time_diff_seconds:.2f}s) is outside the expected video duration range (0 to {video_duration_seconds:.2f}s +/- 5s). AnnotationTime={annotation_time}, VideoStart={video_start_time}, VideoEnd={video_end_time}. Check timestamp alignment.")
+                 # Don't necessarily skip, but log prominently.
+
+            # Clamp negative time diffs, but log warning
+            if time_diff_seconds < 0:
+                 print(f"WARNING: Calculated negative time difference ({time_diff_seconds:.2f}s) for annotation {annotation_time} in video starting at {video_start_time}. Clamping to 0.")
                  time_diff_seconds = 0
-            else:
-                 time_diff_seconds = time_diff.total_seconds()
+
 
             frame_number = int(round(time_diff_seconds * fps)) # Use round for potentially better accuracy
+            print(f"DEBUG: TimeDiff={time_diff_seconds:.3f}s, FPS={fps:.2f}, Calculated Frame={frame_number}") # Added log
 
 
             # Check if frame number is valid (using cached or re-fetched frame count)
             frame_count_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             if not (0 <= frame_number < frame_count_video):
-                # print(f"Warning: Calculated frame number {frame_number} is out of bounds (0-{frame_count_video-1}) for annotation at {annotation_time} in {video_path}. Skipping.")
+                print(f"WARNING: Calculated frame number {frame_number} is out of bounds (0-{frame_count_video-1}) for annotation at {annotation_time} in {video_path}. Skipping.") # Modified log level
                 skipped_frame_bounds += 1
                 continue # Skip to next annotation
 
-            # Seek to frame
-            # set() can be slow, only set if needed or check current position? For simplicity, just set.
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-            ret, frame = cap.read()
+            # --- Extract and Save Frame Sequence (Instead of just one frame) ---
+            frames_to_extract = 11 # Extract 11 frames: target -5 to target +5
+            half_window = frames_to_extract // 2
+            start_frame = max(0, frame_number - half_window)
+            # Ensure end_frame does not exceed frame_count_video
+            end_frame = min(frame_count_video, frame_number + half_window + 1)
 
-            # Check if frame reading was successful
-            if not ret or frame is None:
-                # Try reading the next frame in case of seeking issues
-                # print(f"Warning: Initial read failed for frame {frame_number}. Trying next frame.")
-                # ret, frame = cap.read()
-                # if not ret or frame is None:
-                    print(f"Error: Failed to read frame {frame_number} (or subsequent) from {video_path}. Skipping annotation.")
-                    error_count += 1
-                    continue # Skip to next annotation
+            # Create a subdirectory for this annotation's sequence
+            # Sanitize annotation ID for filename
+            safe_annotation_id = re.sub(r'[<>:"/\\|?* ]', '_', str(annotation_id_raw))
+            sequence_sub_dir_name = f"Dive{dive_id}_Anno{safe_annotation_id}_TargetF{frame_number}_{annotation_time.strftime('%Y%m%dT%H%M%S%f')[:-3]}"
+            sequence_output_dir = os.path.join(output_dir, sequence_sub_dir_name)
+            os.makedirs(sequence_output_dir, exist_ok=True)
+
+            print(f"DEBUG: Extracting frames {start_frame} to {end_frame-1} into {sequence_output_dir}")
+
+            frames_saved = 0
+            for current_frame_num in range(start_frame, end_frame):
+                # Optimized seeking: only set if the frame number changes significantly or crosses a threshold
+                # For simplicity here, we still set for each frame, but be aware this can be slow.
+                cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_num)
+                ret, frame = cap.read()
+
+                if not ret or frame is None:
+                    # Attempt to read the *next* frame as a fallback
+                    # print(f"Warning: Initial read failed for frame {current_frame_num}. Trying next frame.")
+                    # ret, frame = cap.read() # Read next frame
+                    # current_frame_num = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1 # Get actual frame number read
+                    # if not ret or frame is None:
+                         print(f"Error: Failed to read frame {current_frame_num} (or subsequent) from {video_path}. Skipping frame.")
+                         continue # Skip this specific frame
+
+                # --- Draw Annotation Info on Frame ---\
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6 # Slightly smaller font
+                base_color = (255, 255, 255) # White
+                bg_color = (0, 0, 0)       # Black
+                thickness = 1
+                line_type = cv2.LINE_AA
+
+                # Position for text (top-left corner with padding)
+                x_pos = 10
+                y_pos = 25
+                line_height = int(font_scale * 30) # Adjust based on font size
+
+                # Text lines to draw
+                text_lines = [
+                    f"Anno Time: {annotation_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}", # Milliseconds
+                    f"Target Frame: {frame_number}",
+                    f"Current Frame: {current_frame_num}", # Add current frame number
+                    f"Dive: {dive_id} | Anno ID: {annotation_id_raw}", # Combine dive/anno id
+                    f"Taxon: {taxon}",
+                    f"Comment: {comment[:70]}{'...' if len(comment) > 70 else ''}" # Limit comment length
+                ]
+
+                # Calculate background size needed
+                max_text_width = 0
+                for text in text_lines:
+                    (w, h), _ = cv2.getTextSize(text, font, font_scale, thickness)
+                    if w > max_text_width:
+                        max_text_width = w
+                # Adjust background height calculation
+                bg_height = (len(text_lines) * line_height) + (10 if len(text_lines) > 0 else 0)
+
+                # Draw background rectangle (semi-transparent perhaps?)
+                # Ensure coordinates are valid
+                bg_x1 = x_pos - 5
+                bg_y1 = y_pos - line_height + 10 # Adjusted start Y
+                bg_x2 = x_pos + max_text_width + 5
+                bg_y2 = bg_y1 + bg_height -5 # Adjusted end Y
+
+                # Draw solid background rectangle
+                cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), bg_color, -1)
 
 
-            # --- Draw Annotation Info on Frame ---\
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.7
-            base_color = (255, 255, 255) # White
-            bg_color = (0, 0, 0)       # Black
-            thickness = 1
-            line_type = cv2.LINE_AA
-
-            # Position for text (top-left corner with padding)
-            x_pos = 15
-            y_pos = 30
-            line_height = int(font_scale * 30) # Adjust based on font size
-
-            # Text lines to draw
-            text_lines = [
-                f"Time: {annotation_time.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}", # Milliseconds
-                f"Frame: {frame_number}",
-                f"Dive: {dive_id}",
-                f"Taxon: {taxon}",
-                f"Comment: {comment[:80]}{'...' if len(comment) > 80 else ''}" # Limit comment length
-            ]
-
-            # Calculate background size needed
-            max_text_width = 0
-            for text in text_lines:
-                (w, h), _ = cv2.getTextSize(text, font, font_scale, thickness)
-                if w > max_text_width:
-                    max_text_width = w
-            bg_height = len(text_lines) * line_height + 10 # Add padding
-
-            # Draw background rectangle (semi-transparent perhaps?)
-            # For solid background:
-            cv2.rectangle(frame, (x_pos - 5, y_pos - line_height + 5), (x_pos + max_text_width + 10, y_pos + bg_height - line_height + 5), bg_color, -1)
-
-            # Draw text lines onto the frame
-            current_y = y_pos
-            for text in text_lines:
-                cv2.putText(frame, text, (x_pos, current_y), font, font_scale, base_color, thickness, line_type)
-                current_y += line_height
+                # Draw text lines onto the frame
+                current_y = y_pos + 5 # Start text lower
+                for text in text_lines:
+                    cv2.putText(frame, text, (x_pos, current_y), font, font_scale, base_color, thickness, line_type)
+                    current_y += line_height
 
 
-            # --- Save Frame ---\
-            # Sanitize taxon name and comment for filename
-            safe_taxon = re.sub(r'[<>:"/\\|?* ]', '_', taxon)[:30] # Replace invalid chars with underscore
-            safe_comment_part = re.sub(r'[<>:"/\\|?* ]', '_', comment)[:20] # Short part of comment
+                # --- Save Frame ---\
+                frame_filename = f"frame_{current_frame_num:06d}.jpg" # Pad frame number
+                frame_output_path = os.path.join(sequence_output_dir, frame_filename)
 
-            output_filename = f"{dive_id}_{annotation_time.strftime('%Y%m%dT%H%M%S%f')[:-3]}_F{frame_number}_{safe_taxon}_{safe_comment_part}.jpg"
-            output_path = os.path.join(output_dir, output_filename)
-
-            try:
-                # Use imwrite with JPEG quality parameter if needed
-                cv2.imwrite(output_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                processed_count += 1
-            except Exception as e:
-                print(f"Error saving frame to {output_path}: {e}")
-                # Attempt to save with a generic name if filename causes error
                 try:
-                     fallback_filename = f"error_frame_{dive_id}_{frame_number}.jpg"
-                     fallback_path = os.path.join(output_dir, fallback_filename)
-                     cv2.imwrite(fallback_path, frame)
-                     print(f"Saved frame with fallback name: {fallback_filename}")
-                     error_count += 1 # Still count as error due to naming issue
-                except Exception as fe:
-                     print(f"Failed to save frame even with fallback name: {fe}")
-                     error_count += 1
+                    # Use imwrite with JPEG quality parameter if needed
+                    cv2.imwrite(frame_output_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                    frames_saved += 1
+                except Exception as e:
+                    print(f"Error saving frame {current_frame_num} to {frame_output_path}: {e}")
+                    # Attempt to save with a generic name if filename causes error (less likely now)
+                    try:
+                         fallback_filename = f"error_frame_{dive_id}_{current_frame_num}.jpg"
+                         fallback_path = os.path.join(sequence_output_dir, fallback_filename)
+                         cv2.imwrite(fallback_path, frame)
+                         print(f"Saved frame with fallback name: {fallback_filename}")
+                         # Don't increment error_count here if fallback succeeds, but log it
+                    except Exception as fe:
+                         print(f"Failed to save frame {current_frame_num} even with fallback name: {fe}")
+                         error_count += 1 # Count as error if fallback also fails
+
+            if frames_saved > 0:
+                 processed_count += 1 # Count the whole annotation as processed if we saved >= 1 frame
+            else:
+                 # Only increment error count if no frames could be saved for this annotation
+                 if start_frame < end_frame: # Check if there were frames supposed to be extracted
+                      print(f"Error: Failed to save ANY frames for annotation ID {annotation_id_raw} at {annotation_time}")
+                      error_count += 1
 
 
     finally:
@@ -476,12 +595,13 @@ def main():
             if cap and cap.isOpened():
                  cap.release()
                  # print(f"Released: {path}") # Optional debug print
+        print("Video captures released.")
 
     print("\nVerification complete.")
-    print(f"  Successfully processed and saved frames: {processed_count}")
+    print(f"  Successfully processed annotations (saved >= 1 frame): {processed_count}")
     print(f"  Annotations skipped (no video match): {skipped_no_video}")
     print(f"  Annotations skipped (frame out of bounds): {skipped_frame_bounds}")
-    print(f"  Errors encountered (file access, frame read, save): {error_count}")
+    print(f"  Errors encountered (file open, frame read, save fail): {error_count}")
     print(f"  Total annotations checked: {len(annotations_df)}")
 
 if __name__ == "__main__":
