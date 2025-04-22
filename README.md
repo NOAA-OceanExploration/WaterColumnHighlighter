@@ -30,6 +30,10 @@ Evaluation Tools: Includes comprehensive evaluation scripts to assess temporal d
 
 ## Installation
 
+Follow the appropriate instructions for your operating system.
+
+### Standard Installation (Linux/macOS)
+
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/yourusername/CritterDetector.git # Replace with your actual repo URL
@@ -37,8 +41,12 @@ Evaluation Tools: Includes comprehensive evaluation scripts to assess temporal d
     ```
 
 2.  **Install the package and dependencies:**
-    This command uses the `setup.py` file to install the `owl_highlighter` package and all required libraries listed therein.
+    This command uses the `setup.py` file to install the `owl_highlighter` package and all required libraries listed therein. It's recommended to use a virtual environment (like venv or conda).
     ```bash
+    # Optional: Create and activate a virtual environment
+    # python -m venv venv
+    # source venv/bin/activate 
+
     pip install .
     ```
     For development purposes (allowing changes in the code to be reflected without reinstalling):
@@ -56,6 +64,69 @@ Evaluation Tools: Includes comprehensive evaluation scripts to assess temporal d
     ```bash
     wandb login
     ```
+
+### Windows Installation (using Conda)
+
+These instructions guide you through installing CritterDetector on Windows using the Conda package manager, which simplifies the installation of PyTorch with CUDA support.
+
+1.  **Install Conda:**
+    If you don't have Conda, download and install Miniconda (recommended) or Anaconda from [https://docs.conda.io/projects/miniconda/en/latest/](https://docs.conda.io/projects/miniconda/en/latest/) or [https://www.anaconda.com/download](https://www.anaconda.com/download). Follow the installer instructions. It's recommended to allow the installer to add Conda to your PATH environment variable or use the Anaconda Prompt/PowerShell.
+
+2.  **Create a Conda Environment:**
+    Open Anaconda Prompt (or your terminal configured for Conda) and create a new environment (e.g., named `critterdetector`) with a specific Python version (e.g., 3.9 or 3.10 recommended):
+    ```bash
+    conda create -n critterdetector python=3.9
+    ```
+    Activate the environment:
+    ```bash
+    conda activate critterdetector
+    ```
+    You should see `(critterdetector)` at the beginning of your prompt. **All subsequent commands should be run within this activated environment.**
+
+3.  **Install PyTorch with CUDA:**
+    The easiest way to install PyTorch with the correct CUDA version is using Conda. Go to the [PyTorch official website](https://pytorch.org/get-started/locally/) and select the options appropriate for your system (e.g., Stable, Windows, Conda, your CUDA version or CPU). Copy the generated `conda install` command and run it in your activated environment. It will look something like this ( **verify the command on the PyTorch website!**):
+    ```bash
+    # Example command - GET THE CORRECT ONE FROM PYTORCH.ORG
+    conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia 
+    ```
+
+4.  **Install Git:**
+    If you don't have Git, download and install it from [https://git-scm.com/download/win](https://git-scm.com/download/win). During installation, ensure "Git Bash Here" is added to the context menu, and it's recommended to use the default settings for line endings (Checkout Windows-style, commit Unix-style).
+
+5.  **Clone the CritterDetector Repository:**
+    Navigate to the directory where you want to store the project using the `cd` command in your Anaconda Prompt (or Git Bash). Then, clone the repository:
+    ```bash
+    git clone https://github.com/yourusername/CritterDetector.git # Replace with your actual repo URL
+    cd CritterDetector
+    ```
+
+6.  **Install CritterDetector and Dependencies:**
+    Now, install the CritterDetector package and its Python dependencies using pip within your active Conda environment:
+    ```bash
+    pip install .
+    ```
+    Or for development:
+    ```bash
+    pip install -e .
+    ```
+
+7.  **(Optional) Pre-download models:**
+    The `download_models.sh` script is a Bash script. To run it on Windows, you need a Bash environment like **Git Bash** (installed with Git) or **Windows Subsystem for Linux (WSL)**.
+    *   **Using Git Bash:** Right-click inside the `CritterDetector` project folder in File Explorer and select "Git Bash Here". Then run:
+        ```bash
+        bash download_models.sh
+        ```
+    *   **Using WSL:** Open your WSL terminal, navigate to the project directory (e.g., `/mnt/c/path/to/CritterDetector`), ensure your Conda environment is activated within WSL (you might need to install Miniconda inside WSL too), and run `bash download_models.sh`.
+    *   **Alternatively:** You can skip this step. The models will be downloaded automatically when the code needs them for the first time, provided you have an internet connection.
+
+8.  **Login to Weights & Biases (if using for logging):**
+    In your activated Conda environment (Anaconda Prompt or Git Bash), run:
+    ```bash
+    wandb login
+    ```
+    Follow the prompts to log in to your W&B account.
+
+You should now have CritterDetector installed and ready to use within your `critterdetector` Conda environment on Windows. Remember to always run `conda activate critterdetector` before using the tool in a new terminal session.
 
 ## Configuration
 
