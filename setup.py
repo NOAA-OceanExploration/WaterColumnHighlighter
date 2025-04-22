@@ -7,9 +7,9 @@ setup(
     install_requires=[
         "torch>=2.0.0",
         "torchvision>=0.15.0",
-        "transformers>=4.36.2",
+        "transformers>=4.39.0",
         "Pillow>=9.0.0",
-        "opencv-python>=4.9.0.80",
+        "opencv-python==4.9.0.80",
         "colorama>=0.4.6",
         "toml",
         "safetensors",
@@ -17,7 +17,12 @@ setup(
         "pandas",
         "scikit-learn",
         "matplotlib",
-        "tqdm"
+        "tqdm",
+        "numpy<2.0",
+        "boto3",
+        "wandb",
+        "ultralytics>=8.0.0",
+        "timm",
     ],
     extras_require={
         "dev": [

@@ -7,8 +7,8 @@ CritterDetector is an advanced deep learning framework designed to automate the 
 ## Features
 
 Automatic Highlight Detection: Employs deep learning algorithms to automatically identify and extract highlight segments featuring marine organisms from underwater videos.
-Multiple Detection Models: Now supports several state-of-the-art detection models:
-OWL-ViT: Google's Open-vocabulary detector with specialized marine organism prompts
+Multiple Detection Models: Supports several state-of-the-art detection models:
+OWLv2: Google's Open-vocabulary detector with specialized marine organism prompts
 YOLOv8: Ultralytics' fast and accurate object detection with multiple size options
 DETR: Facebook's Detection Transformer for object detection (outputs general COCO labels)
 CLIP: OpenAI's model used here as a patch classifier, leveraging another detector (YOLO or DETR) for initial bounding box proposals.
@@ -16,7 +16,7 @@ Grounding DINO: Open-vocabulary detector similar to OWL, uses text prompts for z
 YOLO-World: Fast zero-shot detector from Ultralytics, uses text prompts with YOLO architecture.
 Ensemble Detection: Combines multiple models with customizable weights to leverage the strengths of each detector for improved accuracy
 Model Variant Selection: Choose between different model variants:
-OWL-ViT: base or large
+OWLv2: base or large
 YOLOv8: nano, small, medium, large, or extra large
 DETR: resnet50, resnet101, or dc5
 CLIP: Uses a configurable base detector (YOLO or DETR) with its own variants.
@@ -28,26 +28,38 @@ Temporal Dynamics Modeling: Utilizes BiLSTM networks to capture temporal depende
 Model Saving and Checkpointing: Implements model checkpointing and early stopping to prevent overfitting and enable training resumption.
 Evaluation Tools: Includes comprehensive evaluation scripts to assess temporal detection accuracy against ground truth annotations.
 
-Installation
-To install all required dependencies including the new model options:
-```bash
-./install_models.sh
-```
-This script will install dependencies for all supported models and cache them locally.
+## Installation
 
-```bash
-pip install torch torchvision opencv-python numpy pandas scikit-learn transformers wandb toml tqdm matplotlib boto3
-```
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/yourusername/CritterDetector.git # Replace with your actual repo URL
+    cd CritterDetector
+    ```
 
-Make sure to log in to your Weights & Biases account:
+2.  **Install the package and dependencies:**
+    This command uses the `setup.py` file to install the `owl_highlighter` package and all required libraries listed therein.
+    ```bash
+    pip install .
+    ```
+    For development purposes (allowing changes in the code to be reflected without reinstalling):
+    ```bash
+    pip install -e .
+    ```
 
-```bash
-wandb login
-```
+3.  **(Optional) Pre-download models:**
+    The required models will typically be downloaded automatically on first use. However, you can pre-download and cache them using the provided script. This is useful for offline environments or ensuring specific model versions are cached.
+    ```bash
+    bash download_models.sh
+    ```
+
+4.  **Login to Weights & Biases (if using for logging):**
+    ```bash
+    wandb login
+    ```
 
 ## Configuration
 
-CritterDetector now uses an enhanced TOML configuration file with support for multiple detection models:
+CritterDetector uses a TOML configuration file (`config.toml`) to manage settings for paths, training, data processing, models, and evaluation.
 
 ```toml
 [paths]
@@ -56,13 +68,14 @@ dataset_cache_dir = "WaterColumnHighlighter/models"
 checkpoint_dir = "/media/patc/puck_of_destiny/critter_detector/checkpoints"
 video_dir = "/home/patc/data/Example_Dive/Compressed"
 csv_dir = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations"
-mode = "train"
+# mode = "train" # Mode is typically set via command line argument now
 highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
 timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
 evaluation_output_dir = "/home/patc/data/Example_Dive/evaluation_results"
-annotation_csv = "/home/patc/data/Example_Dive/SeaTubeAnnotations_20230715T153000.000Z_20230716T020000.000Z/SeaTubeAnnotations_20230715T153000.000Z_20230716T020000.000Z.csv"
+annotation_csv = "/home/patc/data/Example_Dive/Annotations/SeaTubeAnnotations_20220809T080000.000Z_20220809T200000.000Z.csv" # Ensure this path is correct
+verification_output_dir = "/home/patc/data/Example_Dive/annotation_verification_frames" # New path for verify_annotations.py output
 
-[training]
+[training] # Settings specific to the LSTM trainer (models/wch_trainer.py)
 window_size = 20        # Number of frames in each input sequence for LSTM model
 stride = 1
 batch_size = 4
@@ -76,12 +89,12 @@ scheduler_factor = 0.5
 scheduler_patience = 5
 optimizer = "Adam"     # Options: "Adam", "SGD", etc.
 loss_function = "FocalLoss"  # Options: "FocalLoss", "CrossEntropy", etc.
-mixed_precision = true  # New setting
+mixed_precision = true
 
-[data]
+[data] # Settings specific to the LSTM trainer (models/wch_trainer.py)
 frame_rate = 29        # Frames per second to sample from videos
 
-[augmentation]
+[augmentation] # Settings specific to the LSTM trainer (models/wch_trainer.py)
 random_crop_size = 200
 color_jitter_brightness = 0.1
 color_jitter_contrast = 0.1
@@ -93,103 +106,124 @@ wandb_project = "critter_detector"
 wandb_entity = "patrickallencooper"
 log_interval = 10
 
-[model]
+[model] # Settings specific to the LSTM trainer (models/wch_trainer.py)
 model_type = "lstm"    # Options: "lstm" or "detr"
 feature_extractor = "resnet"  # Options for LSTM model: "resnet" or "detr"
 fine_tune = false      # Whether to fine-tune the feature extractor or DETR model
 hidden_dim = 32        # Hidden dimension size for LSTM
 num_layers = 5         # Number of layers for LSTM
 
-[detection]
+[detection] # Settings for the owl_highlighter inference
 model = "yoloworld"  # Options: "owl", "yolo", "detr", "clip", "groundingdino", "yoloworld"
 model_variant = "l"  # Options depend on model (see features list)
-score_threshold = 0.1  # Detection confidence threshold (tune for YOLO-World)
+score_threshold = 0.25 # Detection confidence threshold
 use_ensemble = false    # Whether to use ensemble detection with multiple models
-ensemble_weights = {"owl": 0.5, "yoloworld": 0.5}  # Relative weights for ensemble models
+ensemble_weights = {"owl": 0.7, "yoloworld": 0.3}  # Relative weights for ensemble models
 labels_csv_path = "marine_labels.csv" # Path to CSV file with organism labels for zero-shot models
 
-[clip]
+[clip] # Settings specific to the ClipDetector
 base_detector = "yolo"             # Which detector to use for proposals ("yolo" or "detr")
 base_detector_variant = "v8n"      # Variant for the base detector (e.g., "v8n", "resnet50")
 base_detector_threshold = 0.05   # Confidence threshold for base detector proposals
 
-[owl]
-max_num_boxes = 10    # Maximum number of boxes
-nms_thr = 0.5         # Non-Maximum Suppression threshold
-score_thr = 0.1       # Detection confidence threshold
+# [owl] - These settings are potentially deprecated or handled internally by transformers
+# max_num_boxes = 10    # Maximum number of boxes
+# nms_thr = 0.5         # Non-Maximum Suppression threshold
+# score_thr = 0.1       # Detection confidence threshold (use [detection].score_threshold)
 
-[aws]
+[aws] # Settings specific to the LSTM trainer (models/wch_trainer.py)
 use_aws = false       # Set to true to enable AWS training
 s3_bucket_name = "your-s3-bucket-name"
 s3_data_prefix = "data/"
 aws_region = "us-west-2"
 
 [evaluation]
-temporal_tolerance = 30.0  # Time window in seconds for matching detections
+temporal_tolerance = 300.0  # Time window in seconds for matching detections
 simplified_mode = false      # Use single "organism" label instead of detailed categories
+skip_organism_filter = true  # Skip positive filtering, only remove operational terms (affects evaluate_detections.py)
+
 ```
 
 ## Usage
 
-To start training the model with your dataset:
+### Training (LSTM Model)
+
+To start training the BiLSTM model (`models/wch_trainer.py`) with your dataset:
 
 ```bash
-python critter_detector.py --video_dir /path/to/videos --csv_dir /path/to/csvs --mode train
+python models/wch_trainer.py --mode train --subsample_ratio 0.1 # Add other arguments as needed
 ```
+*   `--mode train`: Specifies training mode.
+*   `--model_type lstm`: (Optional, set in config) Selects the LSTM model.
+*   `--feature_extractor resnet`: (Optional, set in config) Selects the feature extractor for LSTM.
+*   `--subsample_ratio 0.1`: Use 10% of the dataset for training (adjust as needed).
+*   Other arguments like `--fine_tune` can be added.
 
-For AWS training, ensure `use_aws` is set to `true` in the `config.toml` and provide the necessary S3 bucket details.
+Training uses settings from the `[training]`, `[data]`, `[augmentation]`, `[model]`, and `[aws]` sections of `config.toml`.
 
-## Model Checkpointing
+### Inference (Highlight Detection)
 
-During training, the script saves checkpoints after each epoch. These checkpoints contain the model state, optimizer state, and the current epoch number. They are saved to the path specified in `config.toml` and can be used for resuming training or model evaluation.
+To run detection on a video using the configured detector (`owl_highlighter`):
+
+```bash
+python -m owl_highlighter.run_highlighter --video_path /path/to/your/video.mp4 --output_dir /path/to/output
+```
+*   `--video_path`: Path to the input video file.
+*   `--output_dir`: (Optional) Directory to save results (timeline image). Defaults to video directory.
+*   `--config_path`: (Optional) Path to `config.toml` if not in standard locations.
+*   `--frame_interval`: (Optional) Analyze every Nth frame (default: 5).
+*   `--no-timeline`: (Optional) Disable saving the timeline visualization.
+*   `--show-labels`: (Optional, default: True) Show labels on the timeline visualization. Set `--no-show-labels` to hide them.
+
+Inference uses settings from the `[detection]`, `[clip]` sections of `config.toml`.
+
+### Model Checkpointing (LSTM Trainer)
+
+During training, the `wch_trainer.py` script saves checkpoints based on the `checkpoint_steps` setting in `config.toml`. These checkpoints contain the model state, optimizer state, epoch, and global step. They are saved to subdirectories within the path specified by `checkpoint_dir` in `config.toml` (e.g., `checkpoint_dir/fold_1/`). Training can be resumed automatically from the latest checkpoint found for the current fold.
 
 ## Evaluation
 
-The evaluation module has been updated to work with all detection models. Run evaluation with:
+The evaluation module (`owl_highlighter.evaluate_detections.py`) assesses the performance of the configured detection model against ground truth annotations.
+
+Run evaluation with:
 ```bash
 python -m owl_highlighter.evaluate_detections
 ```
 
-You can customize the evaluation behavior through the configuration file:
+This script uses settings from the `[evaluation]`, `[detection]`, and relevant path sections in `config.toml`.
 
-```toml
-[evaluation]
-temporal_tolerance = 30.0  # Time window in seconds for matching detections
-simplified_mode = false      # Use single "organism" label instead of detailed categories
-```
+It will:
+1.  Process all videos found in the `video_dir` specified in the config.
+2.  Compare detections generated by the configured model (`[detection]` section) with ground truth annotations from `annotation_csv`.
+3.  Generate evaluation metrics based on the `temporal_tolerance` setting.
+4.  Save results (plots and text report) to the `evaluation_output_dir`.
 
-The script will:
-1. Process all videos in the configured video directory
-2. Compare detections with ground truth annotations
-3. Generate evaluation metrics including:
-   - Precision: Proportion of detections that match ground truth events
-   - Recall: Proportion of ground truth events that were detected
-   - F1 Score: Harmonic mean of precision and recall
-4. Create visualizations in the evaluation_output_dir:
-   - Metrics distribution plots
-   - Per-video results
-   - Summary statistics
+### Annotation Format for Evaluation
 
-### Annotation Format
+The evaluation script expects annotations in CSV format with specific columns (case-insensitive matching attempted):
+- **Dive ID**: Identifier for the video/dive (used to match annotations to video folders/files).
+- **Start Date**: Timestamp of the annotation (must be parsable into datetime).
+- **Comment**: Text description (used for filtering operational annotations).
+- **Taxonomy/Taxon/Taxon Path**: (Optional) Used for positive organism filtering if `skip_organism_filter` is `false`.
 
-The evaluation script expects annotations in CSV format with the following columns:
-- Dive ID: Identifier for the video/dive
-- Start Date: Timestamp of the annotation (ISO format)
-- Taxon: Type of organism (optional, not used for temporal evaluation)
-
-Example annotation format:
+Example:
 ```csv
-Dive ID,Start Date,Taxon
-2853,2023-07-15T15:53:48.000Z,fish
-2853,2023-07-15T16:00:26.264Z,jellyfish
+Dive ID,Start Date,Comment,Taxon
+EX2304,2023-07-15T15:53:48.000Z,"Saw a large fish",Actinopterygii
+EX2304,2023-07-15T16:00:26.264Z,"Jellyfish pulsing",Scyphozoa
+2673,2022-08-09T10:15:00.000Z,"ROV arm deployed",Operational_Note
 ```
 
-### Output
+### Annotation Verification
 
-The evaluation generates:
-- A metrics distribution plot showing precision, recall, and F1 scores across all videos
-- A detailed text report with per-video metrics and overall statistics
-- Summary statistics including mean and standard deviation of key metrics
+A separate script (`verify_annotations.py`) helps visualize annotation accuracy by extracting frame sequences around each annotation timestamp.
+
+Run verification with:
+```bash
+python verify_annotations.py
+```
+
+This script uses paths from `config.toml` (`video_dir`, `annotation_csv`, `verification_output_dir`). It reads annotations, finds the corresponding video and frame, and saves a sequence of frames (e.g., +/- 5 frames) with annotation details overlaid into the `verification_output_dir`. Each annotation gets its own subfolder.
 
 ## Contributing
 
