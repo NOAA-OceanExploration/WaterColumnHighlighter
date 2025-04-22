@@ -1,3 +1,15 @@
+"""
+Setup script for the CritterDetector/owl_highlighter package.
+
+This script handles the installation of the package and its dependencies.
+It defines all required libraries and their minimum versions needed for
+the various detection models and utilities.
+
+To install the package:
+    pip install .      # Standard installation
+    pip install -e .   # Development installation (editable mode)
+"""
+
 from setuptools import setup, find_packages
 
 setup(
@@ -5,24 +17,33 @@ setup(
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
+        # Core deep learning packages
         "torch>=2.0.0",
         "torchvision>=0.15.0",
-        "transformers>=4.39.0",
-        "Pillow>=9.0.0",
-        "opencv-python==4.9.0.80",
-        "colorama>=0.4.6",
-        "toml",
-        "safetensors",
-        "scipy",
-        "pandas",
-        "scikit-learn",
-        "matplotlib",
-        "tqdm",
-        "numpy<2.0",
-        "boto3",
-        "wandb",
-        "ultralytics>=8.0.0",
-        "timm",
+        "transformers>=4.39.0",  # For OWLv2, DETR, CLIP, Grounding DINO
+        "safetensors",           # For efficient model loading
+        "timm",                  # Required by some transformers models
+        "ultralytics>=8.0.0",    # For YOLOv8 and YOLO-World
+        
+        # Image processing
+        "Pillow>=9.0.0",         # PIL for image handling
+        "opencv-python==4.9.0.80", # OpenCV for video processing
+        
+        # Data handling and utilities
+        "numpy<2.0",             # Array operations (capped at <2.0 for compatibility)
+        "pandas",                # Data manipulation
+        "scipy",                 # Scientific computing
+        "scikit-learn",          # For evaluation metrics
+        
+        # Visualization and output
+        "matplotlib",            # For plotting
+        "colorama>=0.4.6",       # Terminal colors
+        "tqdm",                  # Progress bars
+        
+        # Configuration and cloud
+        "toml",                  # Config file parsing
+        "boto3",                 # AWS integration
+        "wandb",                 # Weights & Biases logging
     ],
     extras_require={
         "dev": [

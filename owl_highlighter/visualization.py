@@ -1,3 +1,15 @@
+"""
+Visualization tools for detection results.
+
+This module provides functions for creating visual representations of
+detection results, primarily timeline visualizations showing detected
+organisms throughout a video's duration.
+
+The visualization groups detected organisms by taxonomic categories,
+using different colors and labels to make the timeline more informative
+and easier to interpret.
+"""
+
 from PIL import Image, ImageDraw, ImageFont
 from .models import VideoProcessingResult
 import os
@@ -13,11 +25,19 @@ def create_timeline_visualization(
     """
     Create a visual timeline of detections in the video.
     
+    This function generates a comprehensive visualization showing when and where
+    organisms were detected throughout the video. It includes:
+    - A horizontal timeline with tick marks for timestamps
+    - Image thumbnails of detected organisms
+    - Color-coded lines connecting detections to their timeline positions
+    - Optional labels for the detected organisms
+    - A color-coded legend showing taxonomic groupings
+    
     Args:
         result: VideoProcessingResult containing detections and video metadata
         output_path: Path where the timeline image should be saved
-        width: Width of the timeline image
-        height: Height of the timeline image
+        width: Width of the timeline image in pixels
+        height: Height of the timeline image in pixels
         show_labels: Whether to show labels under thumbnails in timeline
     """
     # Timeline layout parameters
@@ -142,7 +162,19 @@ def create_timeline_visualization(
     timeline_img.save(output_path)
 
 def _get_taxonomic_groups() -> Dict[str, Dict]:
-    """Return dictionary of taxonomic groups with their colors and patterns."""
+    """
+    Return dictionary of taxonomic groups with their colors and patterns.
+    
+    This function defines the taxonomic classification system used to
+    color-code and categorize detected organisms in the timeline.
+    Each taxonomic group has an associated color and a list of pattern
+    keywords that are used to match detected labels to the correct group.
+    
+    Returns:
+        Dictionary mapping taxonomic group names to their properties:
+            - color: RGB tuple for the group's color
+            - patterns: List of keywords to match in detection labels
+    """
     return {
         # Chordata (vertebrates)
         'actinopterygii': {  # Ray-finned fishes
@@ -223,7 +255,20 @@ def _add_legend(
     label_font: ImageFont.FreeTypeFont,
     scientific_font: ImageFont.FreeTypeFont
 ) -> None:
-    """Add legend to the timeline visualization."""
+    """
+    Add legend to the timeline visualization.
+    
+    This function draws a legend showing the color codes for different
+    taxonomic groups at the bottom of the timeline.
+    
+    Args:
+        draw: PIL ImageDraw object to draw on
+        taxonomic_groups: Dictionary of taxonomic groups with colors and patterns
+        height: Height of the overall image
+        padding: Padding from the edges in pixels
+        label_font: Font for group names
+        scientific_font: Font for example organisms (italicized)
+    """
     legend_y = height - 60
     legend_x = padding
     

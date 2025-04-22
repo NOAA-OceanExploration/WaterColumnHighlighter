@@ -1,3 +1,35 @@
+"""
+Detection module for identifying marine organisms in underwater video.
+
+This module provides various object detection implementations for identifying marine life
+in underwater video footage. It includes several detection models:
+
+1. OWLv2 (Google's Open-vocabulary detector)
+2. YOLOv8 (Ultralytics' object detection)
+3. DETR (Facebook's Detection Transformer)
+4. CLIP (OpenAI's model used as a patch classifier)
+5. Grounding DINO (Open-vocabulary detector)
+6. YOLO-World (Fast zero-shot detector)
+
+These models can be used individually or combined in an ensemble. The main entry point
+is the CritterDetector class, which handles model initialization, video processing, and
+visualization.
+
+Example:
+    ```python
+    from owl_highlighter import CritterDetector
+    
+    # Initialize detector with default settings from config.toml
+    detector = CritterDetector()
+    
+    # Process a video
+    result = detector.process_video("path/to/video.mp4")
+    
+    # Create a timeline visualization
+    detector.create_timeline(result, "timeline_output.jpg")
+    ```
+"""
+
 import os
 import cv2
 from PIL import Image
@@ -17,7 +49,26 @@ from tqdm import tqdm
 import pandas as pd
 
 def _load_labels_from_source(labels_csv_path: Optional[str], default_classes: List[str]) -> List[str]:
-    """Loads labels from CSV or uses default list."""
+    """
+    Loads organism labels from a CSV file or falls back to default class list.
+    
+    This function attempts to read labels from the specified CSV file. If the file
+    doesn't exist or can't be read properly, it falls back to using the provided
+    default classes.
+    
+    Args:
+        labels_csv_path: Path to a CSV file containing labels in a column named 'label_name'.
+                        If None or the file can't be read, default classes are used.
+        default_classes: List of class strings to use if CSV loading fails. Each string may 
+                        contain multiple comma-separated class names.
+    
+    Returns:
+        List[str]: A flattened list of individual class names/labels to use for detection.
+    
+    Note: 
+        The default_classes are expected to be in a comma-separated format, and this function
+        will split and flatten that structure.
+    """
     if labels_csv_path and os.path.exists(labels_csv_path):
         try:
             df = pd.read_csv(labels_csv_path)
@@ -46,16 +97,64 @@ def _load_labels_from_source(labels_csv_path: Optional[str], default_classes: Li
     return default_labels
 
 class BaseDetector:
-    """Base class for all detectors"""
+    """
+    Base class for all detector implementations.
+    
+    This abstract class defines the common interface that all detector classes 
+    must implement. It provides a unified way to interact with different detection models.
+    
+    Attributes:
+        threshold (float): Confidence threshold for detections. Only detections with
+            confidence scores above this threshold will be returned.
+    """
     def __init__(self, threshold: float = 0.1):
+        """
+        Initialize the detector with a confidence threshold.
+        
+        Args:
+            threshold: Minimum confidence score (0.0-1.0) for valid detections.
+                Default is 0.1.
+        """
         self.threshold = threshold
         
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image"""
+        """
+        Run detection on an image.
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The class/label name
+                - score: Confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+        
+        Raises:
+            NotImplementedError: This method must be implemented by subclasses.
+        """
         raise NotImplementedError("Subclasses must implement detect()")
 
 class OwlDetector(BaseDetector):
-    """OWLv2 detector from Google"""
+    """
+    OWLv2 detector from Google for zero-shot object detection.
+    
+    This class implements detection using Google's Open-Vocabulary Object Detection
+    with Language (OWLv2) model. OWLv2 can detect objects based on text prompts without
+    specific training on those categories, making it ideal for specialized domains
+    like marine life detection.
+    
+    The model accepts text prompts in the format "a photo of a [class]" and locates
+    instances of those classes in images. It can work with both predefined marine taxonomy
+    and custom labels loaded from a CSV file.
+    
+    Attributes:
+        threshold (float): Confidence threshold for detections.
+        formatted_classes (List[str]): Text prompts for the model in the format 
+            "a photo of a [class]".
+        processor: OWLv2Processor for preprocessing inputs.
+        model: OWLv2ForObjectDetection model for inference.
+    """
     # Keep OCEAN_CLASSES only as a fallback default
     OCEAN_CLASSES = [
         # Actinopterygii (Ray-finned fishes)
@@ -95,6 +194,17 @@ class OwlDetector(BaseDetector):
 
     def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base",
                  labels_csv_path: Optional[str] = None):
+        """
+        Initialize the OWLv2 detector.
+        
+        Args:
+            threshold: Confidence threshold for detections (0.0-1.0).
+            simplified_mode: If True, use generic organism prompts instead of specific 
+                species names.
+            variant: Model variant to use ("base" or "large").
+            labels_csv_path: Path to a CSV file containing custom labels. If None,
+                the default OCEAN_CLASSES will be used.
+        """
         super().__init__(threshold)
         
         # Load labels using the utility function
@@ -119,7 +229,22 @@ class OwlDetector(BaseDetector):
         self.model.eval()
         
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image using OWLv2"""
+        """
+        Run detection on an image using OWLv2.
+        
+        This method processes the image in batches of text queries, as OWLv2 has a 
+        maximum text query length. Results from all batches are combined into a 
+        single list of detections.
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The detected class name (without the "a photo of a" prefix)
+                - score: Confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+        """
         batch_size = 16  # OWL-ViT's maximum text query length
         all_detections = []
         
@@ -161,8 +286,39 @@ class OwlDetector(BaseDetector):
         return all_detections
 
 class YoloDetector(BaseDetector):
-    """YOLOv8 detector"""
+    """
+    YOLOv8 detector from Ultralytics.
+    
+    This class implements object detection using YOLOv8, a fast and accurate 
+    object detection model from Ultralytics. YOLOv8 is trained on the COCO dataset
+    and can detect 80 common object categories, some of which may be relevant for
+    marine environments (e.g., fish, person, boat).
+    
+    While YOLOv8 is not specifically trained on marine organisms, it can be useful
+    for detecting larger or more common marine creatures and human elements (like divers)
+    in underwater footage.
+    
+    Attributes:
+        threshold (float): Confidence threshold for detections.
+        verbose (bool): Whether to print verbose output during detection.
+        model: The YOLOv8 model used for detection.
+        marine_classes (dict): Dictionary mapping COCO class IDs to class names
+            that may be relevant in marine contexts.
+    """
     def __init__(self, threshold: float = 0.1, variant: str = "v8n", verbose: bool = True):
+        """
+        Initialize the YOLOv8 detector.
+        
+        Args:
+            threshold: Confidence threshold for detections (0.0-1.0).
+            variant: YOLOv8 model variant:
+                - "v8n": Nano (smallest, fastest)
+                - "v8s": Small
+                - "v8m": Medium
+                - "v8l": Large
+                - "v8x": Extra large (largest, most accurate)
+            verbose: Whether to print verbose output during detection.
+        """
         super().__init__(threshold)
         self.verbose = verbose # Store verbose flag
         
@@ -193,7 +349,23 @@ class YoloDetector(BaseDetector):
         }
         
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image using YOLOv8"""
+        """
+        Run detection on an image using YOLOv8.
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The detected class name from COCO dataset
+                - score: Confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+                
+        Note:
+            Unlike specialized marine detectors, YOLOv8 will return generic
+            COCO class names (e.g., "person", "boat", "bird") rather than 
+            specific marine taxonomy.
+        """
         img_array = np.array(image)
         
         # Pass verbose flag to the model call
@@ -222,11 +394,38 @@ class YoloDetector(BaseDetector):
 class DetrDetector(BaseDetector):
     """
     Facebook DETR (Detection Transformer) detector.
-    Note: This detector uses models pre-trained on COCO and will output
-    general object labels (e.g., 'person', 'boat') rather than specific
-    marine organism labels like the OWL or CLIP detectors.
+    
+    This class implements object detection using Facebook's DETR (DEtection TRansformer),
+    which uses a transformer-based architecture for object detection. Like YOLOv8,
+    DETR is trained on the COCO dataset and can detect 80 common object categories.
+    
+    DETR provides good performance on general object detection tasks but is not
+    specifically trained for marine organism detection. It is useful for detecting
+    larger marine creatures, divers, boats, and equipment.
+    
+    Note:
+        This detector uses models pre-trained on COCO and will output
+        general object labels (e.g., 'person', 'boat') rather than specific
+        marine organism labels like the OWL or CLIP detectors.
+    
+    Attributes:
+        threshold (float): Confidence threshold for detections.
+        verbose (bool): Whether to print verbose output during detection.
+        processor: The DETR image processor for pre-processing inputs.
+        model: The DETR model for object detection.
     """
     def __init__(self, threshold: float = 0.1, variant: str = "resnet50", verbose: bool = True):
+        """
+        Initialize the DETR detector.
+        
+        Args:
+            threshold: Confidence threshold for detections (0.0-1.0).
+            variant: DETR model variant:
+                - "resnet50": ResNet-50 backbone (default)
+                - "resnet101": ResNet-101 backbone (larger, more accurate)
+                - "dc5": ResNet-50 with dilated C5 stage (better for small objects)
+            verbose: Whether to print verbose output during detection.
+        """
         super().__init__(threshold)
         self.verbose = verbose # Store verbose flag
 
@@ -259,7 +458,23 @@ class DetrDetector(BaseDetector):
 
 
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image using DETR, returning all COCO objects above threshold."""
+        """
+        Run detection on an image using DETR, returning all COCO objects above threshold.
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The detected class name from COCO dataset
+                - score: Confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+                
+        Note:
+            Like YOLOv8, DETR will return generic COCO class names rather than 
+            specific marine taxonomy. Post-processing may be needed to filter
+            or map these to marine-relevant categories.
+        """
         inputs = self.processor(images=image, return_tensors="pt")
 
         if torch.cuda.is_available():
@@ -288,18 +503,62 @@ class DetrDetector(BaseDetector):
         return detections
 
 class EnsembleDetector(BaseDetector):
-    """Ensemble of multiple detectors with weighted voting"""
+    """
+    Ensemble of multiple detectors with weighted voting.
+    
+    This class combines multiple detector models, allowing them to work together
+    for potentially better detection performance. Each detector contributes detection
+    results which are weighted according to assigned importance values. The ensemble
+    approach can leverage the strengths of different detection models:
+    
+    - OWLv2: Good for specific marine organisms with its zero-shot capabilities
+    - YOLOv8: Fast and reliable for common objects
+    - DETR: Strong at detecting relationships between objects
+    - CLIP: Excellent at classifying image patches
+    - Grounding DINO: Good at open-vocabulary detection with text prompts
+    - YOLO-World: Fast zero-shot detection with YOLO architecture
+    
+    The ensemble applies non-maximum suppression to remove overlapping detections
+    from different models.
+    
+    Attributes:
+        detectors (Dict[str, Tuple[BaseDetector, float]]): Dictionary mapping detector
+            names to (detector, weight) tuples.
+    """
     def __init__(self, detectors: Dict[str, Tuple[BaseDetector, float]]):
         """
-        Initialize ensemble detector
+        Initialize ensemble detector with multiple weighted detection models.
         
         Args:
-            detectors: Dictionary mapping detector name to (detector, weight) tuple
+            detectors: Dictionary mapping detector name to (detector, weight) tuple.
+                Example: {'owl': (owl_detector, 0.7), 'yolo': (yolo_detector, 0.3)}
+                
+                The weights determine the relative importance of each detector's 
+                confidence scores. Higher weights give more influence to that detector.
         """
         self.detectors = detectors
         
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection using all models in ensemble"""
+        """
+        Run detection using all models in the ensemble.
+        
+        This method:
+        1. Runs each detector on the input image
+        2. Weights the confidence scores according to detector weights
+        3. Normalizes scores across all detections
+        4. Removes overlapping detections using non-maximum suppression
+        5. Returns the combined and filtered detection results
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The detected class name
+                - score: Weighted and normalized confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+                - detector: Name of the source detector that produced this detection
+        """
         all_detections = []
         
         # Run each detector and collect results
@@ -341,7 +600,19 @@ class EnsembleDetector(BaseDetector):
         return final_detections
     
     def _calculate_iou(self, box1, box2):
-        """Calculate Intersection over Union (IoU) between two bounding boxes"""
+        """
+        Calculate Intersection over Union (IoU) between two bounding boxes.
+        
+        IoU measures the overlap between two boxes and is used to determine
+        if detections are referring to the same object.
+        
+        Args:
+            box1: First bounding box coordinates [x1, y1, x2, y2] or [[x1, y1], [x2, y2]]
+            box2: Second bounding box coordinates [x1, y1, x2, y2] or [[x1, y1], [x2, y2]]
+            
+        Returns:
+            float: IoU value between 0.0 (no overlap) and 1.0 (perfect overlap)
+        """
         # Convert to [x1, y1, x2, y2] format
         if len(box1) == 4:
             box1_x1, box1_y1, box1_x2, box1_y2 = box1
@@ -377,8 +648,25 @@ class EnsembleDetector(BaseDetector):
 
 class ClipDetector(BaseDetector):
     """
-    CLIP-based detector that uses a base detector for proposals
-    and CLIP for classifying patches within those proposals.
+    CLIP-based detector combining proposal generation and patch classification.
+    
+    This detector uses a two-stage approach:
+    1. A base detector (YOLO or DETR) first proposes bounding boxes of potential objects
+    2. OpenAI's CLIP model then classifies the image patch within each box using text prompts
+    
+    This approach leverages the strong classification capabilities of CLIP with
+    the localization abilities of object detection models. It can be particularly
+    effective for marine organism detection because CLIP has strong zero-shot
+    capabilities for recognizing diverse species.
+    
+    Attributes:
+        threshold (float): Confidence threshold for CLIP classification results.
+        simplified_mode (bool): Whether to use simplified classes for CLIP.
+        base_detector_threshold (float): Threshold for the base detector's proposals.
+        base_detector: The detector used for initial bounding box proposals.
+        clip_processor: CLIP processor for text and image inputs.
+        clip_model: CLIP model for zero-shot image classification.
+        clip_texts (List[str]): List of text prompts/categories for CLIP classification.
     """
     # No need for OCEAN_CLASSES here anymore
 
@@ -388,15 +676,18 @@ class ClipDetector(BaseDetector):
                  base_detector_threshold: float = 0.05,
                  labels_csv_path: Optional[str] = None):
         """
-        Initializes the ClipDetector.
+        Initialize the ClipDetector.
 
         Args:
-            threshold (float): Confidence threshold for CLIP classification.
-            simplified_mode (bool): Whether to use simplified classes for CLIP.
-            base_detector_type (str): Which detector to use for box proposals ('yolo' or 'detr').
-            base_detector_variant (str): Variant for the base detector.
-            base_detector_threshold (float): Confidence threshold for the base detector proposals.
-            labels_csv_path (Optional[str]): Path to a CSV file containing labels.
+            threshold: Confidence threshold for CLIP classification results (0.0-1.0).
+            simplified_mode: If True, use generic organism prompts instead of specific species.
+            base_detector_type: Which detector to use for box proposals ('yolo' or 'detr').
+            base_detector_variant: Variant for the base detector (e.g., 'v8n', 'resnet50').
+            base_detector_threshold: Confidence threshold for the base detector proposals.
+                Note: This is typically lower than the final threshold to ensure
+                CLIP has enough candidate regions to classify.
+            labels_csv_path: Path to a CSV file containing custom labels. If None,
+                default marine organism classes will be used.
         """
         super().__init__(threshold)
         self.simplified_mode = simplified_mode
@@ -450,7 +741,23 @@ class ClipDetector(BaseDetector):
     @torch.no_grad()
     def detect(self, image: Image.Image) -> List[Dict]:
         """
-        Run detection: Base detector proposes boxes, CLIP classifies patches.
+        Run detection using base detector for proposals and CLIP for classification.
+        
+        The detection process:
+        1. The base detector (YOLO or DETR) proposes candidate bounding boxes
+        2. Each proposed box is cropped from the image
+        3. CLIP model evaluates the similarity between each crop and all text prompts
+        4. The text prompt with highest similarity is assigned as the label
+        5. Detections below threshold or matching negative labels are filtered out
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The class/label with highest CLIP similarity score
+                - score: CLIP confidence score (0.0-1.0)
+                - box: Bounding box coordinates from the base detector [x1, y1, x2, y2]
         """
         # 1. Get proposals from the base detector
         # print(f"Running base detector ({type(self.base_detector).__name__}) for proposals...")
@@ -537,13 +844,43 @@ class ClipDetector(BaseDetector):
 
 class GroundingDinoDetector(BaseDetector):
     """
-    Grounding DINO detector (e.g., IDEA-Research/grounding-dino-base).
-    Uses text prompts (classes separated by '.') for zero-shot detection.
+    Grounding DINO detector for zero-shot object detection with text prompts.
+    
+    Grounding DINO is an open-vocabulary object detector that accepts text
+    prompts to specify what objects to find in an image. Unlike traditional
+    detectors, it doesn't require training on specific classes and can detect
+    novel objects described by text.
+    
+    This makes it well-suited for marine organism detection, as it can handle
+    specialized terminology and diverse species without retraining. The model
+    processes text prompts separated by periods (e.g., "fish. shark. coral.")
+    and localizes matching objects in the image.
+    
+    Attributes:
+        threshold (float): Confidence threshold for detections.
+        simplified_mode (bool): Whether to use simplified classes instead of full taxonomy.
+        processor: Grounding DINO processor for pre-processing inputs.
+        model: Grounding DINO model for zero-shot object detection.
+        prompt_texts (List[str]): List of category names to use as detection prompts.
     """
     # No need for OCEAN_CLASSES here anymore
 
     def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "base",
                  labels_csv_path: Optional[str] = None):
+        """
+        Initialize the Grounding DINO detector.
+        
+        Args:
+            threshold: Confidence threshold for detections (0.0-1.0).
+            simplified_mode: If True, use generic organism prompts instead of specific species.
+            variant: Model variant to use:
+                - "tiny": Smallest, fastest
+                - "base": Default balance of speed and accuracy
+                - "small": Medium-size model
+                - "medium": Larger, more accurate
+            labels_csv_path: Path to a CSV file containing custom labels. If None,
+                default marine organism classes will be used.
+        """
         super().__init__(threshold)
         self.simplified_mode = simplified_mode # Store simplified_mode
 
@@ -579,7 +916,23 @@ class GroundingDinoDetector(BaseDetector):
 
     @torch.no_grad()
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image using Grounding DINO, processing classes in batches."""
+        """
+        Run detection on an image using Grounding DINO with text prompts.
+        
+        This method processes the class list in batches, formatting them into
+        prompt strings with period separators as required by Grounding DINO.
+        The results from all batches are combined and NMS is applied to remove
+        overlapping detections.
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The matched text prompt
+                - score: Confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+        """
         all_detections = []
         # Determine batch size for classes based on mode
         class_batch_size = 50 if not self.simplified_mode else len(self.prompt_texts) # Process all if simplified
@@ -625,7 +978,20 @@ class GroundingDinoDetector(BaseDetector):
         return final_detections
 
     def _apply_nms(self, detections: List[Dict], iou_threshold: float = 0.45) -> List[Dict]:
-        """Apply Non-Maximum Suppression to filter overlapping boxes."""
+        """
+        Apply Non-Maximum Suppression to filter overlapping boxes.
+        
+        NMS removes duplicate detections by keeping the highest-scoring box
+        when multiple boxes overlap significantly (based on IoU threshold).
+        
+        Args:
+            detections: List of detection dictionaries to filter.
+            iou_threshold: IoU threshold (0.0-1.0) above which boxes are 
+                considered to be overlapping. Default: 0.45.
+                
+        Returns:
+            Filtered list of detections with overlaps removed.
+        """
         if not detections:
             return []
 
@@ -651,7 +1017,16 @@ class GroundingDinoDetector(BaseDetector):
 
     # Helper function for IoU calculation (copied from EnsembleDetector for standalone use)
     def _calculate_iou(self, box1, box2):
-        """Calculate Intersection over Union (IoU) between two bounding boxes"""
+        """
+        Calculate Intersection over Union (IoU) between two bounding boxes.
+        
+        Args:
+            box1: First bounding box coordinates [x1, y1, x2, y2]
+            box2: Second bounding box coordinates [x1, y1, x2, y2]
+            
+        Returns:
+            float: IoU value between 0.0 (no overlap) and 1.0 (perfect overlap)
+        """
         # Expecting [x1, y1, x2, y2] format
         box1_x1, box1_y1, box1_x2, box1_y2 = box1
         box2_x1, box2_y1, box2_x2, box2_y2 = box2
@@ -680,19 +1055,39 @@ class GroundingDinoDetector(BaseDetector):
 class YoloWorldDetector(BaseDetector):
     """
     YOLO-World detector for zero-shot object detection using text prompts.
+    
+    YOLO-World combines the efficiency of the YOLO architecture with open-vocabulary
+    capabilities, allowing it to detect objects based on text descriptions without
+    specific training. It merges CLIP's vision-language understanding with YOLO's
+    fast and accurate detection capabilities.
+    
+    This makes it particularly suitable for marine organism detection, as it can
+    detect unfamiliar species described by taxonomy or common names, while maintaining
+    the speed advantages of the YOLO architecture.
+    
+    Attributes:
+        threshold (float): Confidence threshold for detections.
+        model: The YOLO-World model used for detection.
+        prompt_texts (List[str]): List of category names to detect.
     """
     # No need for OCEAN_CLASSES here anymore
 
     def __init__(self, threshold: float = 0.1, simplified_mode: bool = False, variant: str = "l",
                  labels_csv_path: Optional[str] = None):
         """
-        Initializes the YoloWorldDetector.
-
+        Initialize the YOLO-World detector.
+        
         Args:
-            threshold (float): Confidence threshold for detection.
-            simplified_mode (bool): Whether to use simplified classes.
-            variant (str): Model variant (e.g., "v2-s", "v2-m", "v2-l", "v2-x"). Default is "l".
-            labels_csv_path (Optional[str]): Path to a CSV file containing labels.
+            threshold: Confidence threshold for detections (0.0-1.0).
+            simplified_mode: If True, use generic organism prompts instead of specific species.
+            variant: Model variant to use:
+                - "s": Small
+                - "m": Medium
+                - "l": Large (default)
+                - "x": Extra large (most accurate)
+                - "v2-s/m/l/x": Version 2 models (preferred if available)
+            labels_csv_path: Path to a CSV file containing custom labels. If None,
+                default marine organism classes will be used.
         """
         super().__init__(threshold)
 
@@ -737,7 +1132,22 @@ class YoloWorldDetector(BaseDetector):
         self.model.set_classes(self.prompt_texts)
 
     def detect(self, image: Image.Image) -> List[Dict]:
-        """Run detection on an image using YOLO-World."""
+        """
+        Run detection on an image using YOLO-World with the configured classes.
+        
+        YOLO-World uses a unified architecture that combines visual-language
+        understanding with YOLO's object detection capabilities, allowing it to
+        detect marine organisms based on text prompts in a single pass.
+        
+        Args:
+            image: PIL Image to analyze.
+            
+        Returns:
+            List of detection dictionaries, each containing:
+                - label: The detected class name that matched a text prompt
+                - score: Confidence score (0.0-1.0)
+                - box: Bounding box coordinates [x1, y1, x2, y2]
+        """
         img_array = np.array(image)
 
         # Run inference with the specified confidence threshold

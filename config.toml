@@ -9,6 +9,7 @@ highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
 timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
 evaluation_output_dir = "/home/patc/data/Example_Dive/evaluation_results"
 annotation_csv = "/home/patc/data/Example_Dive/Annotations/SeaTubeAnnotations_20220809T080000.000Z_20220809T200000.000Z.csv"
+verification_output_dir = "/home/patc/data/Example_Dive/annotation_verification_frames"
 
 [training]
 window_size = 20        # Number of frames in each input sequence for LSTM model
