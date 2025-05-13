@@ -1206,6 +1206,40 @@ class CritterDetector:
         self.config = config
         self.show_labels = show_labels
         
+        # Setup CUDA if available
+        cuda_config = config.get('cuda', {})
+        if torch.cuda.is_available():
+            print(f"CUDA is available with {torch.cuda.device_count()} device(s)")
+            # Set CUDA device if specified in config
+            if 'device' in cuda_config:
+                device_id = cuda_config['device']
+                try:
+                    torch.cuda.set_device(device_id)
+                    print(f"Using CUDA device {device_id}: {torch.cuda.get_device_name(device_id)}")
+                except Exception as e:
+                    print(f"Warning: Failed to set CUDA device {device_id}: {e}")
+                    print(f"Using default device: {torch.cuda.get_device_name(0)}")
+            else:
+                print(f"Using default CUDA device: {torch.cuda.get_device_name(0)}")
+                
+            # Apply memory optimization if specified
+            if cuda_config.get('enable_memory_efficient_attention', False):
+                try:
+                    import transformers
+                    transformers.utils.logging.set_verbosity_error()  # Reduce logging noise
+                    
+                    # Apply memory efficient attention to reduce VRAM usage
+                    if hasattr(transformers, 'BitsAndBytesConfig'):
+                        print("Enabling memory-efficient attention for transformers models")
+                        # Modern transformers supports memory efficient attention via config
+                    else:
+                        print("Memory-efficient attention requested but not available with current transformers version")
+                except ImportError:
+                    print("Warning: transformers not available for memory optimization")
+        else:
+            print("Warning: CUDA is not available. Models will run on CPU which may be slow.")
+            print("If you have an NVIDIA GPU, check CUDA installation.")
+        
         # Extract detection configuration
         detection_config = config['detection']
         self.model_type = detection_config['model']

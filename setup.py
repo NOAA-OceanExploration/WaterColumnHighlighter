@@ -8,9 +8,29 @@ the various detection models and utilities.
 To install the package:
     pip install .      # Standard installation
     pip install -e .   # Development installation (editable mode)
+
+Note for Windows CUDA users:
+    For Windows with CUDA, you might need to install PyTorch separately using:
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+    (Adjust cu118 to match your CUDA version)
 """
 
 from setuptools import setup, find_packages
+import sys
+import os
+
+# Platform-specific dependencies
+if sys.platform.startswith('win'):
+    # Windows-specific notes
+    print("\n" + "="*80)
+    print("NOTE FOR WINDOWS USERS:")
+    print("This package requires PyTorch with CUDA support.")
+    print("After installation, please verify your PyTorch CUDA support by running:")
+    print("python -c \"import torch; print('CUDA available:', torch.cuda.is_available())\"")
+    print("If CUDA is not available, install PyTorch with CUDA using:")
+    print("pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118")
+    print("(Adjust cu118 to match your CUDA version)")
+    print("="*80 + "\n")
 
 setup(
     name="owl_highlighter",
@@ -70,6 +90,8 @@ setup(
     entry_points={
         "console_scripts": [
             "owl-evaluate=owl_highlighter.evaluate_detections:main",
+            "owl-highlight=owl_highlighter.run_highlighter:main",
+            "owl-setup=owl_highlighter.setup_env:main",
         ],
     },
 )

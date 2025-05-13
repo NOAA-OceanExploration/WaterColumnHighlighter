@@ -1,15 +1,15 @@
 [paths]
-model_save_path = "WaterColumnHighlighter/models"
-dataset_cache_dir = "WaterColumnHighlighter/models"
-checkpoint_dir = "/media/patc/puck_of_destiny/critter_detector/checkpoints"
-video_dir = "/home/patc/data/Example_Dive/Compressed"
-csv_dir = "/media/patc/puck_of_destiny/patrick_work/Data/Annotations"
+model_save_path = "models"
+dataset_cache_dir = "models"
+checkpoint_dir = "checkpoints"
+video_dir = "videos"
+csv_dir = "annotations"
 mode = "train"
-highlight_output_dir = "/media/patc/puck_of_destiny/critter_detector/highlights"
-timeline_output_dir = "/media/patc/puck_of_destiny/critter_detector/timelines"
-evaluation_output_dir = "/home/patc/data/Example_Dive/evaluation_results"
-annotation_csv = "/home/patc/data/Example_Dive/Annotations/SeaTubeAnnotations_20220809T080000.000Z_20220809T200000.000Z.csv"
-verification_output_dir = "/home/patc/data/Example_Dive/annotation_verification_frames"
+highlight_output_dir = "highlights"
+timeline_output_dir = "timelines"
+evaluation_output_dir = "evaluation_results"
+annotation_csv = "annotations/example_annotations.csv"
+verification_output_dir = "verification_frames"
 
 [training]
 window_size = 20        # Number of frames in each input sequence for LSTM model
@@ -72,3 +72,8 @@ aws_region = "us-west-2"
 temporal_tolerance = 300.0  # Time window in seconds for matching detections
 simplified_mode = false      # Use single "organism" label instead of detailed categories
 skip_organism_filter = true  # Skip positive filtering, only remove operational terms
+
+[cuda]
+enable_memory_efficient_attention = true
+device = 0  # Use GPU device ID 0 (first GPU)
+batch_size_limit = 4  # Lower this if experiencing CUDA out-of-memory errors

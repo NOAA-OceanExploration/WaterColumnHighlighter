@@ -54,13 +54,23 @@ Follow the appropriate instructions for your operating system.
     pip install -e .
     ```
 
-3.  **(Optional) Pre-download models:**
-    The required models will typically be downloaded automatically on first use. However, you can pre-download and cache them using the provided script. This is useful for offline environments or ensuring specific model versions are cached.
+3.  **Run the setup utility:**
+    This will check your environment, create necessary directories, and download model weights:
+    ```bash
+    owl-setup --full
+    ```
+    Or check your environment without making changes:
+    ```bash
+    owl-setup --check
+    ```
+
+4.  **(Optional) Pre-download models separately:**
+    If you prefer to download models manually:
     ```bash
     bash download_models.sh
     ```
 
-4.  **Login to Weights & Biases (if using for logging):**
+5.  **Login to Weights & Biases (if using for logging):**
     ```bash
     wandb login
     ```
@@ -110,21 +120,31 @@ These instructions guide you through installing CritterDetector on Windows using
     pip install -e .
     ```
 
-7.  **(Optional) Pre-download models:**
-    The `download_models.sh` script is a Bash script. To run it on Windows, you need a Bash environment like **Git Bash** (installed with Git) or **Windows Subsystem for Linux (WSL)**.
-    *   **Using Git Bash:** Right-click inside the `CritterDetector` project folder in File Explorer and select "Git Bash Here". Then run:
-        ```bash
-        bash download_models.sh
-        ```
-    *   **Using WSL:** Open your WSL terminal, navigate to the project directory (e.g., `/mnt/c/path/to/CritterDetector`), ensure your Conda environment is activated within WSL (you might need to install Miniconda inside WSL too), and run `bash download_models.sh`.
-    *   **Alternatively:** You can skip this step. The models will be downloaded automatically when the code needs them for the first time, provided you have an internet connection.
+7.  **Run the setup utility:**
+    This will check your environment, create necessary directories, and download model weights:
+    ```bash
+    owl-setup --full
+    ```
+    Or check your environment without making changes:
+    ```bash
+    owl-setup --check
+    ```
 
-8.  **Login to Weights & Biases (if using for logging):**
+8.  **Verify CUDA Installation:**
+    Check that CUDA is properly configured for PyTorch:
+    ```bash
+    check_cuda.bat
+    ```
+    This will show detailed information about your CUDA installation.
+
+9.  **Login to Weights & Biases (if using for logging):**
     In your activated Conda environment (Anaconda Prompt or Git Bash), run:
     ```bash
     wandb login
     ```
     Follow the prompts to log in to your W&B account.
+
+For detailed Windows CUDA setup instructions, please refer to the included `WINDOWS_CUDA_SETUP.md` file.
 
 You should now have CritterDetector installed and ready to use within your `critterdetector` Conda environment on Windows. Remember to always run `conda activate critterdetector` before using the tool in a new terminal session.
 
